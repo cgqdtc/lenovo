@@ -1,0 +1,4744 @@
+CREATE OR REPLACE PACKAGE "PKG_PCDW_TO_MRP_VN" AS
+  /******************************************************************************
+   NAME: PRDSPOEMTHK.PKG_PCDW_TO_MRP
+   PURPOSE:
+   REVISIONS:
+   Ver       Date       Author          Description
+   --------- ---------- --------------- ------------------------------------
+   1.0       2017-7-17  GLP
+   2.0       2017-7-18  zhangyu3        add fru PO
+  ******************************************************************************/
+  G_LOGIC_NAME   VARCHAR2(30) := 'PKG_PCDW_TO_MRP';
+  V_CURRENTWEEK  DATE := TRUNC(SYSDATE, 'iw');
+  V_SNAPDATE     NUMBER := FUNC_MRP_SNAPDATE;
+  GV_VERSIONDATE DATE := GET_CURR_VERSION('BSMRP');
+  GV_VERSIONYEAR DATE := TRUNC(GV_VERSIONDATE, 'yyyy');
+  GV_VERSIONWEEK VARCHAR2(6) := TO_CHAR(GV_VERSIONDATE, 'ww');
+
+  PROCEDURE PRC_BOM_MAINPROC_YN(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_INV_MAINPROC_YN(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_MRP_SCCBOM_INIT(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_ODM_BOM(WFL_ID   VARCHAR2,
+                        NODE_ID  VARCHAR2,
+                        IV_ID    VARCHAR2,
+                        EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_ODM_INVENTORY(WFL_ID   VARCHAR2,
+                              NODE_ID  VARCHAR2,
+                              IV_ID    VARCHAR2,
+                              EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_SCC_ASN(WFL_ID   VARCHAR2,
+                        NODE_ID  VARCHAR2,
+                        IV_ID    VARCHAR2,
+                        EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_ODM_SFG_SHIPMEN(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_ODM_WIP(WFL_ID   VARCHAR2,
+                        NODE_ID  VARCHAR2,
+                        IV_ID    VARCHAR2,
+                        EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_ODM_MO_RESERVAT(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_ODM_SOURCE(WFL_ID   VARCHAR2,
+                           NODE_ID  VARCHAR2,
+                           IV_ID    VARCHAR2,
+                           EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_ALLSOURCE_SUPPLY(WFL_ID   VARCHAR2,
+                                 NODE_ID  VARCHAR2,
+                                 IV_ID    VARCHAR2,
+                                 EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_ODM_FRU(WFL_ID   VARCHAR2,
+                        NODE_ID  VARCHAR2,
+                        IV_ID    VARCHAR2,
+                        EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_FRU_OPENPO_DEMAND(WFL_ID   VARCHAR2,
+                                  NODE_ID  VARCHAR2,
+                                  IV_ID    VARCHAR2,
+                                  EXITCODE OUT NUMBER);
+
+  PROCEDURE PRC_ODM_SFG_INTRANS(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER);
+
+END;
+/
+CREATE OR REPLACE PACKAGE BODY "PKG_PCDW_TO_MRP_VN" AS
+  /******************************************************************************
+   NAME: PRDSPOEMTHK.PKG_PCDW_TO_MRP
+   PURPOSE:
+   REVISIONS:
+   Ver       Date       Author          Description
+   --------- ---------- --------------- ------------------------------------
+   1.0       2017-7-17  GLP
+   2.0       2017-7-18  zhangyu3        add fru PO
+  ******************************************************************************/
+  PROCEDURE PRC_BOM_MAINPROC_YN(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER) AS
+    PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || 'BOM_MAIN';
+  BEGIN
+    EXITCODE := -20099;
+    LOGGER.INFO(PROC_NAME || 'start');
+    PRC_MRP_SCCBOM_INIT(WFL_ID, NODE_ID, EXITCODE);
+    LOGGER.INFO(PROC_NAME || 'middle');
+    PRC_ODM_BOM(WFL_ID, NODE_ID, IV_ID, EXITCODE);
+    LOGGER.INFO(PROC_NAME || 'complete');
+    EXITCODE := 0;
+  END;
+
+  PROCEDURE PRC_INV_MAINPROC_YN(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER) AS
+    PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || 'INV_MAIN'; -- yangnan13 20241018
+  BEGIN
+    EXITCODE := -20099;
+    LOGGER.INFO(PROC_NAME || '1st_inventory');
+    PRC_ODM_INVENTORY(WFL_ID, NODE_ID, IV_ID, EXITCODE);
+    PRC_ALLSOURCE_SUPPLY(WFL_ID, NODE_ID, IV_ID, EXITCODE);
+    PRC_ODM_SFG_SHIPMEN(WFL_ID, NODE_ID, IV_ID, EXITCODE);
+    PRC_ODM_WIP(WFL_ID, NODE_ID, IV_ID, EXITCODE);
+    PRC_ODM_MO_RESERVAT(WFL_ID, NODE_ID, IV_ID, EXITCODE);
+    LOGGER.INFO(PROC_NAME || '2nd_SUPPLY');
+    PKG_SUPPLY_PROCESS.PRC_MAINPROC(WFL_ID, NODE_ID, IV_ID, EXITCODE);
+    EXITCODE := 0;
+    EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+  PROCEDURE PRC_MRP_SCCBOM_INIT(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(80) := G_LOGIC_NAME || '.PRC_MRP_SCCBOM_INIT';
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    EXECUTE IMMEDIATE 'TRUNCATE TABLE MRP_ODM_BOM_INIT_01'; -- origenal table
+    EXECUTE IMMEDIATE 'TRUNCATE TABLE MRP_ODM_BOM_INIT_SPLIT'; -- split child and father split result
+    EXECUTE IMMEDIATE 'TRUNCATE TABLE MRP_ODM_BOM_INIT'; -- final table
+
+    LOGGER.INFO(L_PROC_NAME || ' Step1 Initial BOM');
+    -- extract data from I_SCC_INTEGRATION.ODM_BOM
+    -- CASE 1  PRDCSEN--none monitor flag
+    INSERT INTO MRP_ODM_BOM_INIT_01 /*PRDPCGSP.ODM_BOM_INIT*/
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY)
+      SELECT /*+ parallel(16) */
+       CASE
+         WHEN ODM <> 'FOXCONN' THEN
+          DECODE(ALTERNATIVE_CODE, 'NA', NULL, 'N/A', NULL, ALTERNATIVE_CODE)
+         WHEN NVL(ALTERNATIVE_CODE, 'NA') IN ('NA', 'N/A') THEN
+          DECODE(ALTERNATIVE_CODE, 'NA', NULL, 'N/A', NULL, ALTERNATIVE_CODE)
+         WHEN LENGTHB(ALTERNATIVE_CODE) < 10 THEN
+          ALTERNATIVE_CODE
+         ELSE
+          ODM_FATHER_ITEM || '-' || DENSE_RANK()
+          OVER(PARTITION BY BU, ODM ORDER BY ODM_FATHER_ITEM, ALTERNATIVE_CODE)
+       END ALTERNATIVE_CODE,
+       DECODE(REGEXP_REPLACE(CHILD_ITEM, ' |_|-'),
+               'NA',
+               NULL,
+               'N/A',
+               NULL,
+               'NA,NA',
+               NULL,
+               REGEXP_REPLACE(CHILD_ITEM, ' |_|-')), EFFECTIVE_END_DATE,
+       EFFECTIVE_START_DATE,
+       DECODE(FATHER_ITEM, 'NA', NULL, 'N/A', NULL, 'NA,NA', NULL, FATHER_ITEM),
+       ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT,
+       VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY
+        FROM (SELECT *
+                 FROM I_SCC_INTEGRATION.ODM_BOM@PRD_CSEN
+                WHERE BU NOT IN ('ISG', 'FCCL')
+                  AND BU NOT LIKE 'Mobile%') A
+       WHERE NOT EXISTS (SELECT 1
+                FROM (SELECT *
+                         FROM I_SCC_INTEGRATION.ODM_BOM@PRD_CSEN
+                        WHERE BU = 'ThinkOption'
+                          AND ODM IN ('USI_HUIZHOU',
+                                      'USI_TAIWAN',
+                                      'USI_VN',
+                                      'WISTRON',
+                                      'WISTRON_VN')) B
+               WHERE A.BU = B.BU
+                 AND A.ODM = B.ODM)
+         AND EXISTS (SELECT 1
+                FROM (SELECT DISTINCT BOM_SOURCE, PVALUE
+                         FROM Z_UI_CONF_PARAMETER
+                        WHERE PDOMAIN = 'ODM_CODE'
+                          AND MONITOR_FLAG = 'N'
+                          AND BOM_SOURCE = 'SCC') C
+               WHERE UPPER(A.ODM) = C.PVALUE);
+    COMMIT; -- confirmed with jinqq3 on not in logic-- added by yangnan13 20240716
+
+    -- CASE 2  PRDCSEN--monitor flag BOE TPV
+    INSERT INTO MRP_ODM_BOM_INIT_01 /*PRDPCGSP.ODM_BOM_INIT*/
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY)
+      SELECT /*+ parallel(16) */
+       CASE
+         WHEN ODM <> 'FOXCONN' THEN
+          DECODE(ALTERNATIVE_CODE, 'NA', NULL, 'N/A', NULL, ALTERNATIVE_CODE)
+         WHEN NVL(ALTERNATIVE_CODE, 'NA') IN ('NA', 'N/A') THEN
+          DECODE(ALTERNATIVE_CODE, 'NA', NULL, 'N/A', NULL, ALTERNATIVE_CODE)
+         WHEN LENGTHB(ALTERNATIVE_CODE) < 10 THEN
+          ALTERNATIVE_CODE
+         ELSE
+          ODM_FATHER_ITEM || '-' || DENSE_RANK()
+          OVER(PARTITION BY BU, ODM ORDER BY ODM_FATHER_ITEM, ALTERNATIVE_CODE)
+       END ALTERNATIVE_CODE,
+       DECODE(REGEXP_REPLACE(CHILD_ITEM, ' |_|-'),
+               'NA',
+               NULL,
+               'N/A',
+               NULL,
+               'NA,NA',
+               NULL,
+               REGEXP_REPLACE(CHILD_ITEM, ' |_|-')), EFFECTIVE_END_DATE,
+       EFFECTIVE_START_DATE,
+       DECODE(FATHER_ITEM, 'NA', NULL, 'N/A', NULL, 'NA,NA', NULL, FATHER_ITEM),
+       ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT,
+       VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY
+        FROM (SELECT *
+                 FROM I_SCC_INTEGRATION.ODM_BOM@PRD_CSEN
+                WHERE BU NOT IN ('ISG', 'FCCL')
+                  AND BU NOT LIKE 'Mobile%') A
+       WHERE UPPER(A.ODM) IN ('BOE', 'TPV');
+    COMMIT;
+
+    -- CASE 3  UATCSEN--monitor flag
+    INSERT INTO MRP_ODM_BOM_INIT_01 /*PRDPCGSP.ODM_BOM_INIT*/
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY)
+      SELECT /*+ parallel(16) */
+       CASE
+         WHEN ODM <> 'FOXCONN' THEN
+          DECODE(ALTERNATIVE_CODE, 'NA', NULL, 'N/A', NULL, ALTERNATIVE_CODE)
+         WHEN NVL(ALTERNATIVE_CODE, 'NA') IN ('NA', 'N/A') THEN
+          DECODE(ALTERNATIVE_CODE, 'NA', NULL, 'N/A', NULL, ALTERNATIVE_CODE)
+         WHEN LENGTHB(ALTERNATIVE_CODE) < 10 THEN
+          ALTERNATIVE_CODE
+         ELSE
+          ODM_FATHER_ITEM || '-' || DENSE_RANK()
+          OVER(PARTITION BY BU, ODM ORDER BY ODM_FATHER_ITEM, ALTERNATIVE_CODE)
+       END ALTERNATIVE_CODE,
+       DECODE(REGEXP_REPLACE(CHILD_ITEM, ' |_|-'),
+               'NA',
+               NULL,
+               'N/A',
+               NULL,
+               'NA,NA',
+               NULL,
+               REGEXP_REPLACE(CHILD_ITEM, ' |_|-')), EFFECTIVE_END_DATE,
+       EFFECTIVE_START_DATE,
+       DECODE(FATHER_ITEM, 'NA', NULL, 'N/A', NULL, 'NA,NA', NULL, FATHER_ITEM),
+       ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT,
+       VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY
+        FROM (SELECT *
+                 FROM I_SCC_INTEGRATION.ODM_BOM@UATCSEN_LK
+                WHERE BU NOT IN ('ISG', 'FCCL')
+                  AND BU NOT LIKE 'Mobile%') A
+       WHERE EXISTS (SELECT 1
+                FROM (SELECT DISTINCT BOM_SOURCE, PVALUE
+                         FROM Z_UI_CONF_PARAMETER
+                        WHERE PDOMAIN = 'ODM_CODE'
+                          AND MONITOR_FLAG = 'Y'
+                          AND BOM_SOURCE = 'SCC'
+                          AND PVALUE NOT IN ('BOE', 'TPV')) C
+               WHERE UPPER(A.ODM) = C.PVALUE);
+    COMMIT;
+
+    UPDATE MRP_ODM_BOM_INIT_01 A
+    SET ODM = 'USI'
+    WHERE ODM = 'USI_HUIZHOU';
+    COMMIT;
+
+
+
+    /* logger.info(l_proc_name || ' Step2 Split BU');*/
+
+    /* --SPLIT BU
+        --1)    WHERE BU LIKE '%/%'
+        INSERT INTO   MRP_ODM_BOM_INIT \*PRDPCGSP.ODM_BOM_INIT*\
+          (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE, FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME, UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY, FLAG)
+        SELECT ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE, FATHER_ITEM, ODM, ODM_CHILD_ITEM,
+               ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT, VERSION, APP_NAME, REGEXP_REPLACE(REGEXP_SUBSTR(BU,'[^/]+',1,LEVEL),' ') AS BU,
+               REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME, UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY, FLAG
+          FROM (SELECT ROWID RID, T.* FROM MRP_ODM_BOM_INIT_01 T
+                 WHERE BU LIKE '%/%') T
+         CONNECT BY
+          LEVEL <= REGEXP_COUNT(BU, '[^/]+')
+            AND PRIOR DBMS_RANDOM.VALUE > 0
+            AND PRIOR RID = RID;
+
+        DELETE FROM MRP_ODM_BOM_INIT WHERE BU LIKE '%/%';
+    /*    COMMIT;*\
+        logger.info(l_proc_name || ' Step3 Process WISTRON BU');
+        -- Wistron logic duplicate with MRP BOM logic , so annotate this logic*/
+
+    LOGGER.INFO(L_PROC_NAME || ' Step2  SPLIT FATHER ITEM');
+
+    --SPLIT FATHER ITEM
+    --1)   where  FATHER_ITEM LIKE '%&%'
+    INSERT INTO MRP_ODM_BOM_INIT_SPLIT
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY,
+       FLAG, RATIO)
+      SELECT ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE,
+             EFFECTIVE_START_DATE,
+             REGEXP_REPLACE(REGEXP_SUBSTR(FATHER_ITEM, '[^&]+', 1, LEVEL), ' ') AS FATHER_ITEM,
+             ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT,
+             VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+             UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY,
+             MODIFIED_BY, FLAG, SPLIT_RATIO
+        FROM (SELECT ROWID RID, T.*,
+                      1 / (REGEXP_COUNT(FATHER_ITEM, '&') + 1) AS SPLIT_RATIO
+                 FROM MRP_ODM_BOM_INIT_01 T
+                WHERE FATHER_ITEM LIKE '%&%') T
+      CONNECT BY LEVEL <= REGEXP_COUNT(FATHER_ITEM, '[^&]+')
+             AND PRIOR DBMS_RANDOM.VALUE > 0
+             AND PRIOR BU = BU
+             AND PRIOR ODM = ODM
+             AND PRIOR RID = RID;
+    --2)   where  FATHER_ITEM LIKE '%,%'
+    INSERT INTO MRP_ODM_BOM_INIT_SPLIT
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY,
+       FLAG, RATIO)
+      SELECT ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE,
+             EFFECTIVE_START_DATE,
+             REGEXP_REPLACE(REGEXP_SUBSTR(FATHER_ITEM, '[^,]+', 1, LEVEL), ' ') AS FATHER_ITEM,
+             ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT,
+             VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+             UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY,
+             MODIFIED_BY, FLAG, SPLIT_RATIO
+        FROM (SELECT ROWID RID, T.*,
+                      1 / (REGEXP_COUNT(FATHER_ITEM, ',') + 1) AS SPLIT_RATIO
+                 FROM MRP_ODM_BOM_INIT_01 T
+                WHERE FATHER_ITEM LIKE '%,%') T
+      CONNECT BY LEVEL <= REGEXP_COUNT(FATHER_ITEM, '[^,]+')
+             AND PRIOR DBMS_RANDOM.VALUE > 0
+             AND PRIOR BU = BU
+             AND PRIOR ODM = ODM
+             AND PRIOR RID = RID;
+    --3)   where  FATHER_ITEM LIKE '%/%'
+    INSERT INTO MRP_ODM_BOM_INIT_SPLIT
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY,
+       FLAG, RATIO)
+      SELECT ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE,
+             EFFECTIVE_START_DATE,
+             REGEXP_REPLACE(REGEXP_SUBSTR(FATHER_ITEM, '[^/]+', 1, LEVEL), ' ') AS FATHER_ITEM,
+             ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT,
+             VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+             UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY,
+             MODIFIED_BY, FLAG, SPLIT_RATIO
+        FROM (SELECT ROWID RID, T.*,
+                      1 / (REGEXP_COUNT(FATHER_ITEM, '/') + 1) AS SPLIT_RATIO
+                 FROM MRP_ODM_BOM_INIT_01 T
+                WHERE FATHER_ITEM LIKE '%/%') T
+      CONNECT BY LEVEL <= REGEXP_COUNT(FATHER_ITEM, '[^/]+')
+             AND PRIOR DBMS_RANDOM.VALUE > 0
+             AND PRIOR BU = BU
+             AND PRIOR ODM = ODM
+             AND PRIOR RID = RID;
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step3  SPLIT FATHER ITEM DONE');
+    /*DELETE FROM MRP_ODM_BOM_INIT_SPLIT WHERE REGEXP_LIKE(FATHER_ITEM, '/|,|&');
+    COMMIT;*/
+
+    LOGGER.INFO(L_PROC_NAME || ' Step5  DEAL WITH CHILD ITEM START');
+    --SPLIT CHILD_ITEM
+    -- 1)WHERE CHILD_ITEM LIKE '%,%'
+    INSERT INTO MRP_ODM_BOM_INIT_SPLIT
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY,
+       FLAG, RATIO)
+      SELECT ALTERNATIVE_CODE,
+             REGEXP_REPLACE(REGEXP_SUBSTR(CHILD_ITEM, '[^,]+', 1, LEVEL), ' ') AS CHILD_ITEM,
+             EFFECTIVE_END_DATE, EFFECTIVE_START_DATE, FATHER_ITEM, ODM,
+             ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT,
+             VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+             UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY,
+             MODIFIED_BY, FLAG, SPLIT_RATIO
+        FROM (SELECT ROWID RID, T.*,
+                      1 / (REGEXP_COUNT(CHILD_ITEM, ',') + 1) AS SPLIT_RATIO
+                 FROM MRP_ODM_BOM_INIT_01 T
+                WHERE CHILD_ITEM LIKE '%,%') T
+      CONNECT BY LEVEL <= REGEXP_COUNT(CHILD_ITEM, '[^,]+')
+             AND PRIOR DBMS_RANDOM.VALUE > 0
+             AND PRIOR BU = BU
+             AND PRIOR ODM = ODM
+             AND PRIOR RID = RID;
+    COMMIT;
+    -- 2)WHERE CHILD_ITEM LIKE '% &%'
+    INSERT INTO MRP_ODM_BOM_INIT_SPLIT
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY,
+       FLAG, RATIO)
+      SELECT ALTERNATIVE_CODE,
+             REGEXP_REPLACE(REGEXP_SUBSTR(CHILD_ITEM, '[^&]+', 1, LEVEL), ' ') AS CHILD_ITEM,
+             EFFECTIVE_END_DATE, EFFECTIVE_START_DATE, FATHER_ITEM, ODM,
+             ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT,
+             VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+             UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY,
+             MODIFIED_BY, FLAG, SPLIT_RATIO
+        FROM (SELECT ROWID RID, T.*,
+                      1 / (REGEXP_COUNT(CHILD_ITEM, ',') + 1) AS SPLIT_RATIO
+                 FROM MRP_ODM_BOM_INIT_01 T
+                WHERE CHILD_ITEM LIKE '%&%') T
+      CONNECT BY LEVEL <= REGEXP_COUNT(CHILD_ITEM, '[^&]+')
+             AND PRIOR DBMS_RANDOM.VALUE > 0
+             AND PRIOR BU = BU
+             AND PRIOR ODM = ODM
+             AND PRIOR RID = RID;
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step5  INSERT INTO CHILD ITEM DONE');
+    /*DELETE FROM MRP_ODM_BOM_INIT_SPLIT WHERE REGEXP_LIKE(CHILD_ITEM, ',|&|');
+    COMMIT;*/
+    LOGGER.INFO(L_PROC_NAME || ' Step5  DELETE CHILD ITEM DONE');
+
+    --summarize all data -- added by yangnan13 ---20240726
+    --1) insert all data
+    INSERT INTO MRP_ODM_BOM_INIT
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY,
+       FLAG, PCT, RATIO, IS_SPLIT)
+      SELECT ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE,
+             EFFECTIVE_START_DATE, FATHER_ITEM, ODM, ODM_CHILD_ITEM,
+             ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT, VERSION, APP_NAME,
+             BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME, UPDATE_TIME,
+             APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY, FLAG, PCT,
+             RATIO, NULL AS IS_SPLIT
+        FROM MRP_ODM_BOM_INIT_01 A
+        where NVL(FATHER_ITEM,'X') not like '%&%' and NVL(FATHER_ITEM,'X') not like '%,%' and NVL(FATHER_ITEM,'X') not like '%/%'
+          and NVL(CHILD_ITEM,'X') not like '%,%' and NVL(CHILD_ITEM,'X') not like '%&%';
+    COMMIT;
+
+    --2) insert split data
+    INSERT INTO MRP_ODM_BOM_INIT
+      (ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE, EFFECTIVE_START_DATE,
+       FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER,
+       SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME,
+       UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY,
+       FLAG, PCT, RATIO, IS_SPLIT)
+      SELECT ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE,
+             EFFECTIVE_START_DATE, FATHER_ITEM, ODM, ODM_CHILD_ITEM,
+             ODM_FATHER_ITEM, PRIORITY, QUANTITY_PER, SPLIT, VERSION, APP_NAME,
+             BU, REMARK, COMMENT1, COMMENT2, ID, CREATE_TIME, UPDATE_TIME,
+             APP_UID, BATCH_ID, CREATE_DATE, CREATED_BY, MODIFIED_BY, FLAG, PCT,
+             RATIO, NULL AS IS_SPLIT
+        FROM MRP_ODM_BOM_INIT_SPLIT A
+        where NVL(FATHER_ITEM,'X') not like '%&%' and NVL(FATHER_ITEM,'X') not like '%,%' and NVL(FATHER_ITEM,'X') not like '%/%'
+          and NVL(CHILD_ITEM,'X') not like '%,%' and NVL(CHILD_ITEM,'X') not like '%&%';
+    COMMIT;
+
+    --3) delete connect data
+    /*DELETE FROM MRP_ODM_BOM_INIT WHERE REGEXP_LIKE(CHILD_ITEM, ',');
+    COMMIT;
+
+    DELETE FROM MRP_ODM_BOM_INIT WHERE REGEXP_LIKE(CHILD_ITEM, '&');
+    COMMIT;
+
+    DELETE FROM MRP_ODM_BOM_INIT WHERE REGEXP_LIKE(FATHER_ITEM, '/|,|&');
+    COMMIT;*/
+
+    LOGGER.INFO(L_PROC_NAME || ' Step5.5  ALL BOM DATA INSERT DONE');
+
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_1');
+    --Clear Data logic
+    --1) delete father item = child item and father item is not null
+    --ITEM1 -> ITEM1 and EXISTS ITEM1->OTHER ITEM
+    DELETE FROM MRP_ODM_BOM_INIT T1
+     WHERE T1.FATHER_ITEM = T1.CHILD_ITEM
+       AND T1.FATHER_ITEM IS NOT NULL
+       AND EXISTS (SELECT 1
+              FROM MRP_ODM_BOM_INIT T2
+             WHERE T1.BU = T2.BU
+               AND T1.ODM = T2.ODM
+               AND T1.FATHER_ITEM = T2.FATHER_ITEM
+               AND T1.CHILD_ITEM <> T2.CHILD_ITEM);
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_2');
+    --ITEM1 -> ITEM1 and NOT EXISTS ITEM1->OTHER ITEM
+    --2) delete father father_item = child _item
+    UPDATE MRP_ODM_BOM_INIT T1
+       SET CHILD_ITEM = NULL
+     WHERE FATHER_ITEM = CHILD_ITEM
+       AND FATHER_ITEM IS NOT NULL
+       AND NOT EXISTS (SELECT 1
+              FROM MRP_ODM_BOM_INIT T2
+             WHERE T1.BU = T2.BU
+               AND T1.ODM = T2.ODM
+               AND T1.FATHER_ITEM = T2.FATHER_ITEM
+               AND T1.CHILD_ITEM <> T2.CHILD_ITEM);
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_3');
+
+    MERGE INTO MRP_ODM_BOM_INIT A
+    USING (SELECT T1.ROWID AS RID,
+                  DECODE(REGEXP_INSTR(FATHER_ITEM, '^[[:digit:]]+$'),
+                          1,
+                          LPAD(FATHER_ITEM, 18, '0'),
+                          FATHER_ITEM) FATHER_ITEM,
+                  DECODE(REGEXP_INSTR(CHILD_ITEM, '^[[:digit:]]+$'),
+                          1,
+                          LPAD(CHILD_ITEM, 18, '0'),
+                          CHILD_ITEM) CHILD_ITEM
+             FROM MRP_ODM_BOM_INIT T1) B
+    ON (A.ROWID = B.RID)
+    WHEN MATCHED THEN
+      UPDATE
+         SET A.FATHER_ITEM = B.FATHER_ITEM,
+             A.CHILD_ITEM  = B.CHILD_ITEM;
+    COMMIT;
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_4');
+    MERGE INTO MRP_ODM_BOM_INIT A
+    USING (SELECT T1.ROWID AS RID,
+                  DECODE(LENGTH(FATHER_ITEM),
+                          7,
+                          LPAD(FATHER_ITEM, 12, '0'),
+                          FATHER_ITEM) FATHER_ITEM,
+                  DECODE(LENGTH(CHILD_ITEM),
+                          7,
+                          LPAD(CHILD_ITEM, 12, '0'),
+                          CHILD_ITEM) CHILD_ITEM
+             FROM MRP_ODM_BOM_INIT T1) B
+    ON (A.ROWID = B.RID)
+    WHEN MATCHED THEN
+      UPDATE
+         SET A.FATHER_ITEM = B.FATHER_ITEM,
+             A.CHILD_ITEM  = B.CHILD_ITEM;
+    COMMIT;
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_4');
+    --ALL charactor is 0
+    UPDATE MRP_ODM_BOM_INIT
+       SET FATHER_ITEM = NULL
+     WHERE REGEXP_INSTR(FATHER_ITEM, '[^0]+') = 0;
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_5');
+    UPDATE MRP_ODM_BOM_INIT
+       SET CHILD_ITEM = NULL
+     WHERE REGEXP_INSTR(CHILD_ITEM, '[^0]+') = 0;
+    COMMIT;
+
+    DBMS_STATS.GATHER_TABLE_STATS(OWNNAME          => 'PRDMRPBS',
+                                  TABNAME          => 'MRP_ODM_BOM_INIT',
+                                  ESTIMATE_PERCENT => '100',
+                                  METHOD_OPT       => 'for all columns size auto',
+                                  NO_INVALIDATE    => FALSE,
+                                  DEGREE           => 4,
+                                  CASCADE          => TRUE);
+
+    --DELETE CYCLE BOM
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_6');
+    EXECUTE IMMEDIATE 'TRUNCATE TABLE  mrp_odm_cyclebom'; -- added by yangnan13 for code optimization 20240801
+    EXECUTE IMMEDIATE 'TRUNCATE TABLE  z_sccbom_sbb'; -- added by yangnan13 for code optimization 20240801
+    INSERT INTO Z_SCCBOM_SBB
+      SELECT SBB, SYSDATE
+        FROM PRDPCDW.Z_DSP_DIM_SBB@PRDMDMN_19C_NEW
+       WHERE SBB LIKE 'SBB%';
+    COMMIT;
+    INSERT INTO MRP_ODM_CYCLEBOM
+      (LV, ISLEAF, ISCYCLE, ALTERNATIVE_CODE, CHILD_ITEM, EFFECTIVE_END_DATE,
+       EFFECTIVE_START_DATE, FATHER_ITEM, ODM, ODM_CHILD_ITEM, ODM_FATHER_ITEM,
+       PRIORITY, QUANTITY_PER, SPLIT, VERSION, APP_NAME, BU, REMARK, COMMENT1,
+       COMMENT2, ID, CREATE_TIME, UPDATE_TIME, APP_UID, BATCH_ID, CREATE_DATE,
+       CREATED_BY, MODIFIED_BY, FLAG, PCT, RATIO, IS_SPLIT)
+      SELECT *
+        FROM (SELECT LEVEL, CONNECT_BY_ISLEAF AS ISLEAF,
+                      CONNECT_BY_ISCYCLE AS ISCYCLE, T.*
+                 FROM MRP_ODM_BOM_INIT T
+                START WITH FATHER_ITEM IN (SELECT SBB FROM Z_SCCBOM_SBB)
+               CONNECT BY NOCYCLE PRIOR ODM_CHILD_ITEM = ODM_FATHER_ITEM
+                      AND PRIOR ODM = ODM
+                      AND PRIOR BU = BU)
+       WHERE ISCYCLE = 1;
+    COMMIT;
+
+    DELETE FROM MRP_ODM_BOM_INIT T1
+     WHERE EXISTS (SELECT 1
+              FROM MRP_ODM_CYCLEBOM T2
+             WHERE T1.BU = T2.BU
+               AND T1.ODM = T2.ODM
+               AND T1.FATHER_ITEM = T2.FATHER_ITEM
+               AND T1.CHILD_ITEM = T2.CHILD_ITEM
+               AND T1.ODM_FATHER_ITEM = T2.ODM_FATHER_ITEM
+               AND T1.ODM_CHILD_ITEM = T2.ODM_CHILD_ITEM);
+    COMMIT;
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_7');
+    DELETE FROM MRP_ODM_BOM_INIT A
+     WHERE LENGTH(CHILD_ITEM) > 10
+       AND ODM IN ('WISTRON', 'WISTRON ZS')
+       AND NOT EXISTS (SELECT 1
+              FROM MRP_ODM_BOM_INIT B
+             WHERE B.FATHER_ITEM = A.CHILD_ITEM
+               AND A.ODM = B.ODM)
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW
+             WHERE COMPONENT = SUBSTR(A.CHILD_ITEM, 1, 10))
+       AND EXISTS (SELECT 1
+              FROM MRP_ODM_BOM_INIT B
+             WHERE B.FATHER_ITEM = SUBSTR(A.CHILD_ITEM, 1, 10)
+               AND A.ODM = B.ODM)
+       AND NOT EXISTS
+     (SELECT 1
+              FROM MRP_ODM_BOM_INIT B
+             WHERE B.FATHER_ITEM = SUBSTR(A.CHILD_ITEM, 1, 10)
+               AND A.ODM = B.ODM
+               AND SUBSTR(B.FATHER_ITEM, 1, 10) = SUBSTR(B.CHILD_ITEM, 1, 10));
+    COMMIT;
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_8');
+    /*DELETE FROM MRP_ODM_BOM_INIT A
+     WHERE CHILD_ITEM LIKE 'SBB%'
+       AND NOT EXISTS
+     (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_PRODUCT@PRDMDMN_19C_NEW
+             WHERE PRODUCT = NVL(A.FATHER_ITEM, A.ODM_FATHER_ITEM))
+       AND NOT EXISTS
+     (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW
+             WHERE COMPONENT = NVL(A.FATHER_ITEM, A.ODM_FATHER_ITEM)
+               AND HIER1_CODE IN ('ZERS', 'ZPPN')); --add ZPPN for DS parts which will have SBB -> SBB BOM structure by xuml7 20241223
+    COMMIT;*/
+
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_9');
+    --DELETE DOULBE FOR WISTRON
+    DELETE FROM MRP_ODM_BOM_INIT T1
+     WHERE T1.ROWID IN (SELECT RID
+                          FROM (SELECT T1.ROWID AS RID,
+                                        ROW_NUMBER() OVER(PARTITION BY FATHER_ITEM, CHILD_ITEM, ODM_FATHER_ITEM, ODM_CHILD_ITEM, ALTERNATIVE_CODE, PRIORITY, SPLIT ORDER BY T1.ROWID) RN
+                                   FROM MRP_ODM_BOM_INIT T1
+                                  WHERE ODM = 'WISTRON'
+                                    AND BU IS NULL)
+                         WHERE RN > 1);
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step6 Clear Data_10');
+    MERGE INTO MRP_ODM_BOM_INIT A
+    USING (
+      WITH ODM_BOM AS
+       (SELECT DISTINCT BU, ODM, ODM_FATHER_ITEM, ODM_CHILD_ITEM,
+                        ALTERNATIVE_CODE
+          FROM MRP_ODM_BOM_INIT
+         WHERE ALTERNATIVE_CODE IS NOT NULL),
+      ISSUE_DATA AS
+       (SELECT BU, ODM, ODM_FATHER_ITEM, ALTERNATIVE_CODE
+          FROM MRP_ODM_BOM_INIT T1 -- changed by yangnan13 20240801
+         GROUP BY BU, ODM, ODM_FATHER_ITEM, ALTERNATIVE_CODE
+        HAVING COUNT(*) = 1)
+      SELECT T1.ROWID AS RID
+        FROM MRP_ODM_BOM_INIT T1
+       INNER JOIN ISSUE_DATA T2
+          ON T1.BU = T2.BU
+         AND T1.ODM = T2.ODM
+         AND T1.ODM_FATHER_ITEM = T2.ODM_FATHER_ITEM
+         AND T1.ALTERNATIVE_CODE = T2.ALTERNATIVE_CODE) B ON (A.ROWID = B.RID) WHEN MATCHED THEN
+        UPDATE SET A.ALTERNATIVE_CODE = NULL;
+    COMMIT;
+
+    --------------------------------------add by xuml7 for ODM BOM ISSUE, which SBB match to SBB & SBB$01 MAKE THE bom DOUBLE;
+    DELETE FROM MRP_ODM_BOM_INIT A
+     WHERE ODM_FATHER_ITEM LIKE '%$%'
+       AND EXISTS (SELECT 1
+              FROM MRP_ODM_BOM_INIT B
+             WHERE A.FATHER_ITEM = B.FATHER_ITEM
+               AND A.ODM_FATHER_ITEM <> B.ODM_FATHER_ITEM
+               and b.ODM_FATHER_ITEM not LIKE '%$%'
+               AND A.ODM = B.ODM);
+    COMMIT;
+
+    --------------------------------------add by xuml7 for bitland bom, which GPU VRAM HAS ALT;
+    update MRP_ODM_BOM_INIT A
+    set ALTERNATIVE_CODE = ''
+    where ALTERNATIVE_CODE = '0' AND ODM = 'BITLAND';
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+    EXITCODE := 0;
+
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+  PROCEDURE PRC_SCC_ASN(WFL_ID   VARCHAR2,
+                        NODE_ID  VARCHAR2,
+                        IV_ID    VARCHAR2,
+                        EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || '.prc_scc_asn';
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    EXECUTE IMMEDIATE 'truncate table Z_SCC_ASN';
+    --1 INHOUSE TO INHOUSE, AS SHIP_TO SUPPLY
+    --2 ODM T0 INHOUSE, AS SHIP_FROM SUPPLY
+    --3 ODM TO ODM, AS SHIP_TO SUPPLY
+    --4 HUB LOI TO ODM, AS SHIP_FROM SUPPLY
+    INSERT INTO Z_SCC_ASN
+      (ASN_NO, ASN_LINE, PO, PO_LINE, SUPPLIER_ID, SUPPLIER_NAME, SHIP_TO,
+       PLANT_CODE, SHIP_DATE, VENDOR_PN, LENOVO_PN, DELIVERY_NO, DELIVERY_LINE,
+       DELIVERY_QTY, STATUS, BU, PURCHASE_GROUP, PROCUREMENT_MODE, TRANS_TYPE,
+       INV_TYPE, MEASURE, SYS_CREATED_DATE, SYS_CREATED_BY, SYS_MODIFY_DATE,
+       SYS_MODIFY_BY)
+    --inhouse to inhouse, odm to inhouse
+      WITH ASN AS
+       (
+        /*SELECT ASN_NO, TO_CHAR(ASN_LINE) AS ASN_LINE, PO, PO_LINE,  VENDOR_CODE, VENDOR_NAME, PLANT_CODE AS SHIP_TO,PLANT_CODE,
+               SHIP_DATE, VENDOR_PN, LENOVO_PN, DELIVERY_NO, DELIVERY_LINE, DELIVERY_QTY, STATUS, NULL AS BU,PURCHASE_GROUP,
+                 PROCUREMENT_MODE, INCOTERMS_LOCATION,SYS_CREATED_DATE,SYS_CREATED_BY,SYS_MODIFY_DATE,SYS_MODIFY_BY
+         FROM (SELECT  ASN_NO, ASN_LINE, PO, PO_LINE,  VENDOR_CODE, VENDOR_NAME, PLANT_CODE, SHIP_DATE, VENDOR_PN, LENOVO_PN,DELIVERY_NO, ORDER_TYPE_DESC, BU,
+                       DELIVERY_LINE, DELIVERY_QTY, STATUS, PURCHASE_GROUP, PROCUREMENT_MODE, INCOTERMS_LOCATION, SYS_CREATED_DATE, SYS_CREATED_BY, SYS_MODIFY_DATE, SYS_MODIFY_BY,
+                       ROW_NUMBER() OVER(PARTITION BY PLANT_CODE, DELIVERY_NO, PO, PO_LINE, LENOVO_PN ORDER BY SYS_MODIFY_DATE DESC) RN
+               FROM I_SCC_INTEGRATION.ASN_VIEW@PRD_CSEN )
+        WHERE RN = 1
+          AND BU = 'IDG'
+          AND UPPER(STATUS) = 'OPEN'
+          AND UPPER(ORDER_TYPE_DESC) LIKE '%PO'
+          --AND UPPER(REPLACE(ORDER_TYPE_DESC,' ', '')) <> UPPER('SchedulingAgreement')
+          AND PLANT_CODE NOT IN  ('H301','H510','H520','X410','X420','I020','I021') */
+        SELECT ASN_NO, TO_CHAR(ASN_LINE) AS ASN_LINE, PO, PO_LINE, VENDOR_CODE,
+                VENDOR_NAME, PLANT_CODE AS SHIP_TO, PLANT_CODE, SHIP_DATE,
+                VENDOR_PN, LENOVO_PN, DELIVERY_NO, DELIVERY_LINE, DELIVERY_QTY,
+                STATUS, NULL AS BU, PURCHASE_GROUP, PROCUREMENT_MODE,
+                INCOTERMS_LOCATION, SYS_CREATED_DATE, SYS_CREATED_BY,
+                SYS_MODIFY_DATE, SYS_MODIFY_BY
+          FROM (SELECT /*+ driving_site(a)*/
+                   ASN_NO, ASN_LINE, PO, PO_LINE, VENDOR_CODE, VENDOR_NAME,
+                   PLANT_CODE, SHIP_DATE, VENDOR_PN, LENOVO_PN, DELIVERY_NO,
+                   ORDER_TYPE_DESC, BU, DELIVERY_LINE, DELIVERY_QTY, STATUS,
+                   PURCHASE_GROUP, PROCUREMENT_MODE, INCOTERMS_LOCATION,
+                   SYS_CREATED_DATE, SYS_CREATED_BY, SYS_MODIFY_DATE, SYS_MODIFY_BY,
+                   ROW_NUMBER() OVER(PARTITION BY PLANT_CODE, DELIVERY_NO, PO, PO_LINE, LENOVO_PN ORDER BY SYS_MODIFY_DATE DESC) RN
+                    FROM I_SCC_INTEGRATION.ASN_VIEW@PRD_CSEN A
+                   WHERE BU = 'IDG'
+                     AND UPPER(STATUS) = 'OPEN'
+                     AND UPPER(ORDER_TYPE_DESC) LIKE '%PO'
+                        --AND UPPER(REPLACE(ORDER_TYPE_DESC,' ', '')) <> UPPER('SchedulingAgreement')
+                     AND PLANT_CODE NOT IN
+                         ('H301', 'H510', 'H520', 'X410', 'X420', 'I020', 'I021')
+                        --added monitor_flag='N' or BOE 20241108 zhangxf37
+                     AND EXISTS
+                   (SELECT NULL
+                            FROM Z_UI_CONF_PARAMETER B
+                           WHERE B.PDOMAIN = 'ODM_CODE'
+                             AND B.ASN_SOURCE = 'SCC'
+                             AND A.VENDOR_CODE = B.PATTRIBUTE
+                             AND (B.MONITOR_FLAG = 'N' OR PVALUE IN ('BOE', 'TPV'))))
+         WHERE RN = 1
+        UNION ALL
+        --monitor='Y' and non BOE
+        SELECT ASN_NO, TO_CHAR(ASN_LINE) AS ASN_LINE, PO, PO_LINE, VENDOR_CODE,
+                VENDOR_NAME, PLANT_CODE AS SHIP_TO, PLANT_CODE, SHIP_DATE,
+                VENDOR_PN, LENOVO_PN, DELIVERY_NO, DELIVERY_LINE, DELIVERY_QTY,
+                STATUS, NULL AS BU, PURCHASE_GROUP, PROCUREMENT_MODE,
+                INCOTERMS_LOCATION, SYS_CREATED_DATE, SYS_CREATED_BY,
+                SYS_MODIFY_DATE, SYS_MODIFY_BY
+          FROM (SELECT /*+ driving_site(a)*/
+                   ASN_NO, ASN_LINE, PO, PO_LINE, VENDOR_CODE, VENDOR_NAME,
+                   PLANT_CODE, SHIP_DATE, VENDOR_PN, LENOVO_PN, DELIVERY_NO,
+                   ORDER_TYPE_DESC, BU, DELIVERY_LINE, DELIVERY_QTY, STATUS,
+                   PURCHASE_GROUP, PROCUREMENT_MODE, INCOTERMS_LOCATION,
+                   SYS_CREATED_DATE, SYS_CREATED_BY, SYS_MODIFY_DATE, SYS_MODIFY_BY,
+                   ROW_NUMBER() OVER(PARTITION BY PLANT_CODE, DELIVERY_NO, PO, PO_LINE, LENOVO_PN ORDER BY SYS_MODIFY_DATE DESC) RN
+                    FROM I_SCC_INTEGRATION.ASN_VIEW@UATCSEN_LK A
+                   WHERE BU = 'IDG'
+                     AND UPPER(STATUS) = 'OPEN'
+                     AND UPPER(ORDER_TYPE_DESC) LIKE '%PO'
+                        --AND UPPER(REPLACE(ORDER_TYPE_DESC,' ', '')) <> UPPER('SchedulingAgreement')
+                     AND PLANT_CODE NOT IN
+                         ('H301', 'H510', 'H520', 'X410', 'X420', 'I020', 'I021')
+                        --added monitor_flag='N' or BOE 20241108 zhangxf37
+                     AND EXISTS (SELECT NULL
+                            FROM Z_UI_CONF_PARAMETER B
+                           WHERE B.PDOMAIN = 'ODM_CODE'
+                             AND B.ASN_SOURCE = 'SCC'
+                             AND A.VENDOR_CODE = B.PATTRIBUTE
+                             AND B.MONITOR_FLAG = 'Y'
+                             AND B.PVALUE NOT IN ('BOE', 'TPV')))
+         WHERE RN = 1),
+      CONF AS
+       (SELECT SUPPLIERID, SUPPLIERDESC, FLAG --ONE SUPPLIERD MATCH TO ONE SUPPLIERDESC
+          FROM (SELECT SUPPLIERID, SUPPLIERDESC, FLAG,
+                        ROW_NUMBER() OVER(PARTITION BY SUPPLIERID ORDER BY SUPPLIERDESC) AS RN
+                   FROM ( -- INHOUSE SUPPLIER
+                          SELECT DISTINCT SUPPLIERID,
+                                           UPPER(SUPPLIERDESC) AS SUPPLIERDESC, FLAG
+                            FROM PRDPCDW.Z_DSP_DIM_SUPPLIER
+                           WHERE FLAG = 'INHOUSE'
+                          UNION -- ODM SUPPLIER
+                          SELECT DISTINCT NVL(T2.SUPPLIERID, T1.PATTRIBUTE) AS SUPPLIERID,
+                                            --USE T2's MAPPING
+                                           T1.PVALUE AS SUPPLIERDESC, 'ODM' AS FLAG
+                            FROM (SELECT PATTRIBUTE, PVALUE
+                                      FROM Z_UI_CONF_PARAMETER
+                                     WHERE PDOMAIN = 'ODM_CODE'
+                                       AND ASN_SOURCE = 'SCC') T1
+                            LEFT JOIN (SELECT DISTINCT SUPPLIERID,
+                                                       UPPER(SUPPLIERDESC) AS SUPPLIERDESC
+                                         FROM PRDPCDW.Z_DSP_DIM_SUPPLIER
+                                        WHERE SUPPLIERID <> '1000031525' -- 1000031525 with ECS venddor name in mrp
+                                          AND FLAG = 'ODM') T2
+                              ON T1.PVALUE = T2.SUPPLIERDESC))
+         WHERE RN = 1)
+      SELECT ASN_NO, ASN_LINE, PO, PO_LINE, SUPPLIER_ID, SUPPLIER_NAME, SHIP_TO,
+             CASE
+               WHEN (FLAG = 'INHOUSE' OR PROCUREMENT_MODE = 'LOI') THEN
+                PLANT_CODE
+               ELSE
+                SUPPLIER_NAME
+             END AS PLANT_CODE, SHIP_DATE, VENDOR_PN, LENOVO_PN, DELIVERY_NO,
+             DELIVERY_LINE, DELIVERY_QTY, STATUS, BU, PURCHASE_GROUP,
+             PROCUREMENT_MODE, TRANS_TYPE, 'SFG_ASN' AS INV_TYPE,
+             'SFG' AS MEASURE, SYS_CREATED_DATE, SYS_CREATED_BY, SYS_MODIFY_DATE,
+             SYS_MODIFY_BY
+        FROM (SELECT ASN_NO, ASN_LINE, PO, PO_LINE, A.VENDOR_CODE AS SUPPLIER_ID,
+                      B.SUPPLIERDESC AS SUPPLIER_NAME, SHIP_TO, PLANT_CODE,
+                      SHIP_DATE, VENDOR_PN, LENOVO_PN, DELIVERY_NO, DELIVERY_LINE,
+                      DELIVERY_QTY, STATUS, BU, PURCHASE_GROUP,
+                      CASE
+                        WHEN PROCUREMENT_MODE IS NOT NULL THEN
+                         PROCUREMENT_MODE
+                        ELSE
+                         (CASE
+                           WHEN B.FLAG = 'INHOUSE' THEN
+                            'LOI'
+                           ELSE
+                            (CASE
+                              WHEN INCOTERMS_LOCATION IN ('LENOVOHUB', 'LENOVO HUB') THEN
+                               'SOI'
+                              ELSE
+                               'LOI'
+                            END)
+                         END)
+                      END AS PROCUREMENT_MODE,
+                      CASE
+                        WHEN B.FLAG = 'INHOUSE' THEN
+                         'INHOUSE TO INHOUSE'
+                        ELSE
+                         'ODM TO INHOUSE'
+                      END AS TRANS_TYPE, FLAG, SYS_CREATED_DATE, SYS_CREATED_BY,
+                      SYS_MODIFY_DATE, SYS_MODIFY_BY
+                 FROM ASN A
+                 JOIN CONF B
+                   ON A.VENDOR_CODE = B.SUPPLIERID)
+      UNION ALL
+      -- odm to odm
+      SELECT ASN AS ASN_NO, TO_CHAR(ASN_LINE) AS ASN_LINE, PO, PO_LINE,
+             '0001000338' AS VENDOR_CODE, 'LCFC' AS VENDOR_NAME,
+             UPPER(ODM) AS SHIP_TO, UPPER(ODM) AS PLANT_CODE, SHIP_DATE,
+             ODM_PN AS VENDOR_PN, LENOVO_PN, DELIVERY_NOTE AS DELIVERY_NO,
+             DELIVERY_LINE, DELIVERY_QTY, STATUS, BU, NULL AS PURCHASE_GROUP,
+             'SOI' AS PROCUREMENT_MODE, 'ODM TO ODM' AS TRANS_TYPE,
+             'SFG_ASN' AS INV_TYPE, 'SFG' AS MEASURE,
+             CREATE_TIME AS SYS_CREATED_DATE, CREATED_BY AS SYS_CREATED_BY,
+             UPDATE_TIME AS SYS_MODIFY_DATE, MODIFIED_BY AS SYS_MODIFY_BY
+        FROM I_SCC_INTEGRATION.ODM_ASN@PRD_CSEN
+       WHERE ((ODM = 'AVC' AND
+             VERSION IN (SELECT MAX(VERSION)
+                             FROM I_SCC_INTEGRATION.ODM_ASN@PRD_CSEN
+                            WHERE ODM = 'AVC')) OR ODM <> 'AVC')
+         AND ODM IN (SELECT PATTRIBUTE
+                       FROM Z_UI_CONF_PARAMETER
+                      WHERE PDOMAIN = 'INTRANSIT'
+                        AND PNAME = 'TO_ODM'
+                        AND ASN_SOURCE = 'SCC')
+         AND UPPER(STATUS) = 'OPEN'
+      UNION ALL
+      -- hub to odm from ui intransit
+      SELECT '' AS ASN_NO, '' AS ASN_LINE, ODM_PO PO, '' PO_LINE, VENDOR_CODE,
+             VENDOR_NAME, UPPER(CUSTOMER_NAME) AS SHIP_TO, PLANT AS PLANT_CODE,
+             NEW_ETA AS SHIP_DATE, '' AS VENDOR_PN, LENOVO_PN,
+             SUPPLIER_DELIVERY_NO AS DELIVERY_NO,
+             SUPPLIER_DELIVERY_LINE AS DELIVERY_LINE,
+             CASE
+                WHEN STATUS LIKE 'In transit%' THEN
+                 ASN_QTY
+                ELSE
+                 GREATEST(NVL(ASN_QTY, 0) - NVL(GR_QTY, 0), 0)
+              END AS DELIVERY_QTY, STATUS, BU, NULL AS PURCHASE_GROUP,
+             'LOI' AS PROCUREMENT_MODE, 'HUB TO ODM' AS TRANS_TYPE,
+             'PN_ASN' AS INV_TYPE, 'PN' AS MEASURE, SYS_CREATION_TIME,
+             SYS_CREATION_BY, SYS_LASTMODIFY_TIME, SYS_LASTMODIFY_BY
+        FROM PRDSCSYSTEM.UI_EXECUTION_ASN_GR@PRD_CSEN
+       WHERE (STATUS LIKE 'In transit%' OR STATUS LIKE 'mismatch')
+            --AND INVENTORY_TYPE = 'LOI'
+            --AND LOCATION IN (SELECT LGORT FROM Z_CONF_ASN_LGROT)
+         AND UPPER(VENDOR_NAME) = 'HUB'
+         AND SYS_LASTMODIFY_TIME < SYSDATE
+         AND UPPER(CUSTOMER_NAME) IN
+             (SELECT PVALUE
+                FROM Z_UI_CONF_PARAMETER
+               WHERE PDOMAIN = 'ODM_CODE'
+                 AND ASN_SOURCE = 'SCC');
+    /*
+       -- hub to odm from ui ASN - GR
+    INSERT INTO Z_SCC_ASN (SUPPLIER_NAME, SHIP_TO, PLANT_CODE, SHIP_DATE, VENDOR_PN, LENOVO_PN, DELIVERY_NO,BU, DELIVERY_QTY, SYS_CREATED_DATE, SYS_MODIFY_DATE )
+    WITH ASN AS (
+     SELECT  UPPER(SHIP_FROM_NAME) AS VENDOR_NAME, UPPER(SHIP_TO_NAME) AS SHIP_TO, UPPER(SHIP_TO_NAME) AS PLANT_CODE,
+              NVL(ODM_PN, MATNR) AS VENDOR_PN, NVL(MATNR,ODM_PN) AS LENOVO_PN, VERUR AS DELIVERY_NO,
+               BU, SUM(LFIMG) AS DELIVERY_QTY, MAX(LFDAT) AS SHIP_DATE, MAX(LGORT) AS LGORT,
+               MAX(SYS_CREATED_DATE) SYS_CREATED_DATE, MAX(SYS_MODIFIED_DATE) SYS_MODIFIED_DATE
+        FROM PCGSDC.Z_UI_ASN_ODM@PRD_CSEN
+        WHERE UPPER(SHIP_FROM_NAME) = 'HUB'
+        AND UPPER(STATUS) IN ('ASN_SENT','ASN_GR')
+        AND LGORT IN (SELECT LGORT FROM Z_CONF_ASN_LGROT)
+        AND UPPER(SHIP_TO_NAME) IN  ( SELECT PVALUE FROM Z_UI_CONF_PARAMETER
+                                  WHERE PDOMAIN = 'ODM_CODE')
+        AND SYS_MODIFIED_DATE < TRUNC(SYSDATE)
+        GROUP BY UPPER(SHIP_FROM_NAME), UPPER(SHIP_TO_NAME), ODM_PN, MATNR , VERUR, BU),
+    GR AS (
+     SELECT 'HUB' AS VENDOR_NAME, UPPER(SITE_NAME) AS SHIP_TO, UPPER(SITE_NAME) AS PLANT_CODE,
+             NVL(ODM_PN, MATNR) AS VENDOR_PN, NVL(MATNR,ODM_PN) AS LENOVO_PN, DELIVERY_NOTES AS DELIVERY_NO,  BU,
+             SUM(QTY) AS GR_QTY, MAX(RECEIPT_DATE) AS RECEIPT_DATE
+       FROM PCGSDC.Z_UI_GR_ODM@PRD_CSEN
+       WHERE  UPPER(SITE_NAME) IN  ( SELECT PVALUE FROM Z_UI_CONF_PARAMETER
+                                                WHERE PDOMAIN = 'ODM_CODE' )
+         AND SYS_MODIFIED_DATE < TRUNC(SYSDATE)
+        GROUP BY UPPER(SHIP_FROM_NAME), UPPER(SITE_NAME), ODM_PN, MATNR, DELIVERY_NOTES, BU )
+     SELECT VENDOR_NAME, SHIP_TO, PLANT_CODE, SHIP_DATE, VENDOR_PN, LENOVO_PN, DELIVERY_NO,  BU, DELIVERY_QTY, SYS_CREATED_DATE, SYS_MODIFIED_DATE
+          FROM (SELECT  ASN.VENDOR_NAME, ASN.SHIP_TO, ASN.PLANT_CODE, MAX(ASN.SHIP_DATE) SHIP_DATE, MAX(ASN.VENDOR_PN) VENDOR_PN, NVL(ASN.LENOVO_PN, ASN.VENDOR_PN) LENOVO_PN, ASN.DELIVERY_NO,  MAX(ASN.BU) AS BU,
+                        SUM(NVL(ASN.DELIVERY_QTY,0) ) -  SUM(NVL(GR.GR_QTY,0)) AS DELIVERY_QTY,  MAX(SYS_CREATED_DATE) SYS_CREATED_DATE,MAX(SYS_MODIFIED_DATE) SYS_MODIFIED_DATE
+                        FROM ASN
+                        LEFT JOIN GR
+                        ON ASN.DELIVERY_NO = GR.DELIVERY_NO
+                        --AND ASN.VENDOR_NAME = GR.VENDOR_NAME
+                        --AND ASN.VENDOR_PN = GR.VENDOR_PN
+                        AND ASN.LENOVO_PN = GR.LENOVO_PN
+                        GROUP  BY ASN.VENDOR_NAME, ASN.SHIP_TO, ASN.PLANT_CODE, NVL(ASN.LENOVO_PN, ASN.VENDOR_PN),  ASN.DELIVERY_NO )
+                WHERE DELIVERY_QTY > 0
+       */
+    COMMIT;
+
+    IF TO_NUMBER(TO_CHAR(SYSDATE, 'D', 'NLS_DATE_LANGUAGE = American')) = 5 /*v_snapdate*/ --- just for testing ,should restore  yangnan13
+     THEN
+      EXECUTE IMMEDIATE 'ALTER TABLE Z_SCC_ASN_HIS TRUNCATE SUBPARTITION P_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'YYYY') || '_W_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'WW');
+
+      INSERT INTO Z_SCC_ASN_HIS
+        (VERSIONYEAR, VERSIONWEEK, VERSIONDATE, ASN_NO, ASN_LINE, PO, PO_LINE,
+         SUPPLIER_ID, SUPPLIER_NAME, SHIP_TO, PLANT_CODE, SHIP_DATE, VENDOR_PN,
+         LENOVO_PN, DELIVERY_NO, DELIVERY_LINE, DELIVERY_QTY, STATUS, BU,
+         PURCHASE_GROUP, PROCUREMENT_MODE, TRANS_TYPE, INV_TYPE, MEASURE,
+         SYS_CREATED_DATE, SYS_CREATED_BY, SYS_MODIFY_DATE, SYS_MODIFY_BY)
+        SELECT TRUNC(V_CURRENTWEEK, 'yyyy'), TO_CHAR(V_CURRENTWEEK, 'ww'),
+               V_CURRENTWEEK, ASN_NO, ASN_LINE, PO, PO_LINE, SUPPLIER_ID,
+               SUPPLIER_NAME, SHIP_TO, PLANT_CODE, SHIP_DATE, VENDOR_PN,
+               LENOVO_PN, DELIVERY_NO, DELIVERY_LINE, DELIVERY_QTY, STATUS, BU,
+               PURCHASE_GROUP, PROCUREMENT_MODE, TRANS_TYPE, INV_TYPE, MEASURE,
+               SYS_CREATED_DATE, SYS_CREATED_BY, SYS_MODIFY_DATE, SYS_MODIFY_BY
+          FROM Z_SCC_ASN;
+
+      COMMIT;
+    END IF;
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+  -- this logic still different from production envirement , when MTP ; should change producton code -- added by yangnan13 20240909
+  PROCEDURE PRC_ODM_BOM(WFL_ID   VARCHAR2,
+                        NODE_ID  VARCHAR2,
+                        IV_ID    VARCHAR2,
+                        EXITCODE OUT NUMBER) AS
+    L_PROC_NAME   VARCHAR2(40) := G_LOGIC_NAME || '.PRC_ODM_BOM';
+    L_CRR_VERSION DATE := GET_CURR_VERSION('BSMRP');
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    PKG_BASE_FUNCS.INIT_LOG_RUN(G_LOGIC_NAME || ':' || IV_ID);
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    EXECUTE IMMEDIATE 'truncate table  z_mid_source_odmbom';
+    EXECUTE IMMEDIATE 'truncate table z_mid_imp_odm_bom';
+    EXECUTE IMMEDIATE 'truncate table z_pcdw_odm_bom';
+
+    /* *************************************************************************************
+    Backgroud : SA&V project partitial done , final bom source conclusion--- added by yangnan13 20240724
+    1) most odm bom source come from scc
+    2) seldomly bom source come from ftp--LITEON +MSI
+    ****************************************************************************************/
+    --step 1 insert into SCC bom source
+    INSERT INTO Z_MID_SOURCE_ODMBOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE)
+      SELECT ODM, FATHER_ITEM, ODM_FATHER_ITEM, CHILD_ITEM, ODM_CHILD_ITEM,
+             QUANTITY_PER, ALTERNATIVE_CODE AS ALPGR, PRIORITY AS ALPRF,
+             EFFECTIVE_START_DATE, EFFECTIVE_END_DATE, CREATE_TIME,
+             'SCC' AS SYS_CREATED_BY, SYSDATE AS SYS_CREATED_DATE
+        FROM MRP_ODM_BOM_INIT A
+       WHERE ODM_FATHER_ITEM IS NOT NULL; -- added by yangnan13 2024/11/6 for none monitor data;
+    COMMIT;
+    
+--begin cuigq4 25.2.24 vn
+    INSERT INTO z_pcdw_odm_bom
+      (odm, father_lenovopn, father_odmpn, son_lenovopn, son_odmpn, qtyper, alpgr, alprf, effstartdate,
+       effenddate, odm_created_date, sys_created_by, sys_created_date)
+      SELECT /*+ parallel(a 4)*/
+      DISTINCT DECODE(upper(odm),'FOXCONNL6','FOXCONN',odm), TRIM(father_lenovopn), TRIM(father_odmpn), TRIM(son_lenovopn), TRIM(son_odmpn),
+               qtyper, alpgr, substr(alprf,1,4),
+               case when trunc(sys_created_date) = trunc(effstartdate) then trunc(effstartdate,'IW')
+                      else effstartdate
+               end as effstartdate, --add by zy3
+               effenddate, odm_created_date, g_logic_name, SYSDATE
+        FROM (select * from prdpcdw.imp_odm_bom where ODM <>'BITLAND') a -- ADDED BY YANGNAN13 FOR BITLAND 20240902
+       WHERE instr(son_lenovopn, '_') = 0
+          OR son_lenovopn IS NULL;--  added by yangnan13 for VN 20241230;
+    COMMIT;
+--end cuigq4 25.2.24 vn
+
+    --step 2 insert into FTP bom source
+    INSERT INTO Z_MID_SOURCE_ODMBOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE)
+      SELECT /*+ parallel(8) */
+       ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE,
+       'FTP' AS SYS_CREATED_BY, SYSDATE AS SYS_CREATED_DATE
+        FROM PRDPCDW.IMP_ODM_BOM@PRDMDMN_LK_11G A
+       WHERE FATHER_ODMPN IS NOT NULL
+         AND EXISTS (SELECT 1
+                FROM (SELECT DISTINCT PVALUE, BOM_SOURCE
+                         FROM Z_UI_CONF_PARAMETER
+                        WHERE PDOMAIN = 'ODM_CODE') B
+               WHERE B.BOM_SOURCE = 'FTP'
+                 AND UPPER(A.ODM) = UPPER(B. PVALUE));
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step1');
+    DELETE FROM Z_MID_SOURCE_ODMBOM WHERE SON_LENOVOPN = '41U4034';
+
+    --add by xuml7 for wangqun10 NEC bom issue 20240507
+    UPDATE Z_MID_SOURCE_ODMBOM
+       SET FATHER_LENOVOPN = ''
+     WHERE FATHER_ODMPN = '000000087084100002';
+
+    --add by xuml7 for yuzf3, for which one lenovopn have more than 1 odmpn, need mapping to unique ODMPN
+    UPDATE Z_MID_SOURCE_ODMBOM T
+       SET SON_ODMPN = SON_LENOVOPN
+     WHERE SON_LENOVOPN IN ('SB20N60893',
+                            'SB20N60890',
+                            'SB20N60928',
+                            'SB20N60965',
+                            'SB20N60961',
+                            'SB20N60962')
+       AND FATHER_LENOVOPN LIKE 'SBB%';
+
+    DELETE FROM Z_MID_SOURCE_ODMBOM A
+     WHERE EXISTS
+     (SELECT 1
+              FROM (SELECT T.ROWID AS RID,
+                            ROW_NUMBER() OVER(PARTITION BY ODM, FATHER_LENOVOPN ORDER BY FATHER_ODMPN) AS RN
+                       FROM Z_MID_SOURCE_ODMBOM T
+                      WHERE FATHER_LENOVOPN IN ('SB20N60893',
+                                                'SB20N60890',
+                                                'SB20N60928',
+                                                'SB20N60965',
+                                                'SB20N60961',
+                                                'SB20N60962')) B
+             WHERE A.ROWID = B.RID
+               AND B.RN > 1);
+    COMMIT;
+    LOGGER.INFO(L_PROC_NAME || ' Step2');
+    --add by xuml7 for wangcheng15,when the same odm father & odm just have one alt part, then update the alpgr to null 20230829
+    UPDATE Z_MID_SOURCE_ODMBOM A
+       SET ALPGR = ''
+     WHERE EXISTS (SELECT 1
+              FROM (SELECT COUNT(SON_ODMPN) OVER(PARTITION BY ODM, FATHER_ODMPN, ALPGR) CNT,
+                            T.ROWID AS RID
+                       FROM Z_MID_SOURCE_ODMBOM T
+                      WHERE ALPGR IS NOT NULL) B
+             WHERE A.ROWID = B.RID
+               AND B.CNT = 1);
+    COMMIT;
+
+    UPDATE Z_MID_SOURCE_ODMBOM
+       SET FATHER_LENOVOPN = REPLACE(FATHER_LENOVOPN, '/', '')
+     WHERE ODM = 'AVC';
+    COMMIT;
+    UPDATE Z_MID_SOURCE_ODMBOM
+       SET SON_LENOVOPN = REPLACE(SON_LENOVOPN, '/', '')
+     WHERE ODM = 'AVC';
+    COMMIT;
+
+    DELETE FROM Z_MID_SOURCE_ODMBOM
+     WHERE FATHER_LENOVOPN IN ('SBB0Q20867', 'SBB0Q17719')
+       AND SON_ODMPN IN ('2A585K700-G98-G')
+       AND ALPGR NOT IN (1, 7)
+       AND ODM = 'FOXCONN';
+
+    COMMIT;
+
+    UPDATE Z_MID_SOURCE_ODMBOM
+       SET SON_LENOVOPN = ''
+     WHERE NVL(SON_LENOVOPN, ' ') IN ('SM30U64434', 'SM30U64433')
+       AND ODM = 'LCFC';
+
+    UPDATE Z_MID_SOURCE_ODMBOM
+       SET FATHER_LENOVOPN = ''
+     WHERE NVL(FATHER_LENOVOPN, ' ') IN ('SM30U64434', 'SM30U64433')
+       AND ODM = 'LCFC';
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step3');
+    INSERT INTO Z_PCDW_ODM_BOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE)
+      SELECT /*+ parallel(a 4)*/
+      DISTINCT DECODE(UPPER(ODM), 'FOXCONNL6', 'FOXCONN', ODM),
+               TRIM(FATHER_LENOVOPN), TRIM(FATHER_ODMPN), TRIM(SON_LENOVOPN),
+               TRIM(SON_ODMPN), QTYPER, ALPGR, SUBSTR(ALPRF, 1, 4),
+               CASE
+                 WHEN TRUNC(SYS_CREATED_DATE) = TRUNC(EFFSTARTDATE) THEN
+                  TRUNC(EFFSTARTDATE, 'IW')
+                 ELSE
+                  EFFSTARTDATE
+               END AS EFFSTARTDATE,
+                --add by zy3
+               EFFENDDATE, ODM_CREATED_DATE, G_LOGIC_NAME, SYSDATE
+        FROM Z_MID_SOURCE_ODMBOM A
+       WHERE INSTR(SON_LENOVOPN, '_') = 0
+          OR SON_LENOVOPN IS NULL;
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step4');
+    INSERT INTO Z_PCDW_ODM_BOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, SYS_CREATED_BY, SYS_CREATED_DATE)
+      SELECT ODM, SUBSTR(FATHER_LENOVOPN, INSTR(FATHER_LENOVOPN, '_') + 1, 10),
+             SUBSTR(FATHER_LENOVOPN, INSTR(FATHER_LENOVOPN, '_') + 1, 10),
+             SUBSTR(FATHER_LENOVOPN, 1, INSTR(FATHER_LENOVOPN, '_') - 1),
+             SUBSTR(FATHER_LENOVOPN, 1, INSTR(FATHER_LENOVOPN, '_') - 1), 1,
+             ALPGR, ALPRF, MIN(EFFSTARTDATE), MAX(EFFENDDATE), G_LOGIC_NAME,
+             SYSDATE
+        FROM Z_MID_SOURCE_ODMBOM
+       WHERE INSTR(FATHER_LENOVOPN, '_') > 0
+         AND INSTR(FATHER_LENOVOPN, 'SB20') > 0
+         AND INSTR(FATHER_LENOVOPN, 'SBB') > 0
+       GROUP BY ODM,
+                SUBSTR(FATHER_LENOVOPN, INSTR(FATHER_LENOVOPN, '_') + 1, 10),
+                SUBSTR(FATHER_LENOVOPN, INSTR(FATHER_LENOVOPN, '_') + 1, 10),
+                SUBSTR(FATHER_LENOVOPN, 1, INSTR(FATHER_LENOVOPN, '_') - 1),
+                SUBSTR(FATHER_LENOVOPN, 1, INSTR(FATHER_LENOVOPN, '_') - 1),
+                ALPGR, ALPRF
+      UNION ALL
+      SELECT ODM, SUBSTR(FATHER_LENOVOPN, 1, INSTR(FATHER_LENOVOPN, '_') - 1),
+             FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER, ALPGR, ALPRF,
+             MIN(EFFSTARTDATE), MAX(EFFENDDATE), G_LOGIC_NAME, SYSDATE
+        FROM Z_MID_SOURCE_ODMBOM
+       WHERE INSTR(FATHER_LENOVOPN, '_') > 0
+         AND INSTR(FATHER_LENOVOPN, 'SB20') > 0
+         AND INSTR(FATHER_LENOVOPN, 'SBB') > 0
+       GROUP BY ODM, SUBSTR(FATHER_LENOVOPN, 1, INSTR(FATHER_LENOVOPN, '_') - 1),
+                 --modify by wangke15 at 20200427
+                FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER, ALPGR, ALPRF;
+    COMMIT;
+
+    --Add by qinying4 for LCFC error BOM start
+    UPDATE Z_PCDW_ODM_BOM
+       SET SON_LENOVOPN = ''
+     WHERE ODM = 'LCFC'
+       AND SON_LENOVOPN = 'SP10K38391'
+       AND FATHER_LENOVOPN IN ('SSA0S71773',
+                               'SSA0S71774',
+                               'SSA0T37581',
+                               'SW10A11646',
+                               'SW10K97446',
+                               '5D10K81086');
+    COMMIT;
+    --Add by qinying4 for LCFC error BOM end
+
+    LOGGER.INFO(L_PROC_NAME || ' Step5');
+    --need split son_lenovopn
+    INSERT INTO Z_MID_IMP_ODM_BOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE)
+      SELECT /*+ parallel(a 4)*/
+       DECODE(UPPER(ODM), 'FOXCONNL6', 'FOXCONN', ODM), TRIM(FATHER_LENOVOPN),
+       TRIM(FATHER_ODMPN), TRIM(SON_LENOVOPN), TRIM(SON_ODMPN), QTYPER, ALPGR,
+       ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE
+        FROM Z_MID_SOURCE_ODMBOM A
+       WHERE INSTR(SON_LENOVOPN, '_') > 0;
+    COMMIT;
+
+
+    --split son_lenovopn
+    INSERT INTO Z_PCDW_ODM_BOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE)
+      SELECT DISTINCT ODM, FATHER_LENOVOPN, FATHER_ODMPN,
+                      REGEXP_SUBSTR(SON_LENOVOPN, '[^_]+', 1, RN) SON_LENOVOPN,
+                      SON_ODMPN, QTYPER, ALPGR, SUBSTR(ALPRF, 1, 4),
+                      EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, G_LOGIC_NAME,
+                      SYSDATE
+        FROM Z_MID_IMP_ODM_BOM A,
+             (SELECT LEVEL RN FROM DUAL CONNECT BY LEVEL <= 40) B --add by qinying for LCFC multi-son_lenovopn
+       WHERE RN <= REGEXP_COUNT(NVL(SON_LENOVOPN, 'X'), '[^_]+');
+
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step6');
+    --add by xuml7 20240515 for father lenovopn case like: father_lenovopn = 'SBG0W62216_SBG0W62223'
+    INSERT INTO Z_PCDW_ODM_BOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE)
+      SELECT DISTINCT ODM,
+                      REGEXP_SUBSTR(FATHER_LENOVOPN, '[^_]+', 1, RN) FATHER_LENOVOPN,
+                      FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER, ALPGR,
+                      SUBSTR(ALPRF, 1, 4), EFFSTARTDATE, EFFENDDATE,
+                      ODM_CREATED_DATE, G_LOGIC_NAME, SYSDATE
+        FROM Z_PCDW_ODM_BOM A,
+             (SELECT LEVEL RN FROM DUAL CONNECT BY LEVEL <= 40) B --add by qinying for LCFC multi-son_lenovopn
+       WHERE RN <= REGEXP_COUNT(NVL(FATHER_LENOVOPN, 'X'), '[^_]+')
+         AND A.FATHER_LENOVOPN IN (SELECT SON_LENOVOPN FROM Z_MID_IMP_ODM_BOM)
+         AND (A.FATHER_LENOVOPN LIKE 'SBG%' OR A.FATHER_LENOVOPN LIKE 'SB2%')
+         AND FATHER_LENOVOPN NOT LIKE '%SBB%';
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step7');
+    ---exclude LCFC MTM-SBB BOM
+    DELETE FROM Z_PCDW_ODM_BOM A
+     WHERE EXISTS (SELECT 1
+              FROM Z_DSP_DIM_SBB C
+             WHERE A.SON_LENOVOPN = C.SBB
+               AND A.ODM = 'LCFC')
+       AND EXISTS (SELECT 1
+              FROM Z_DSP_DIM_PRODUCT C
+             WHERE A.SON_LENOVOPN = C.PRODUCT
+               AND A.ODM = 'LCFC');
+
+
+    --delete lcfc ISSUE BOM 20181101
+    DELETE FROM Z_PCDW_ODM_BOM
+     WHERE FATHER_LENOVOPN IN ('5SB0N24830')
+       AND ODM = 'LCFC'; --,'5SB0N24828');
+
+    COMMIT;
+
+    --add by zy3 2018-4-4, solve wistron idea/think bom double count issue
+    DELETE FROM Z_PCDW_ODM_BOM A
+     WHERE LENGTH(SON_LENOVOPN) > 10
+       AND ODM IN ('WISTRON', 'WISTRON ZS','WISTRON_VN_NB','WISTRON_VN')-- add cuigq4  VN 2025.2.24
+       AND NOT EXISTS (SELECT 1
+              FROM Z_PCDW_ODM_BOM B
+             WHERE B.FATHER_LENOVOPN = A.SON_LENOVOPN
+               AND A.ODM = B.ODM)
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW
+             WHERE COMPONENT = SUBSTR(A.SON_LENOVOPN, 1, 10))
+       AND EXISTS
+     (SELECT 1
+              FROM Z_PCDW_ODM_BOM B
+             WHERE B.FATHER_LENOVOPN = SUBSTR(A.SON_LENOVOPN, 1, 10)
+               AND A.ODM = B.ODM)
+       AND NOT EXISTS
+     (SELECT 1
+              FROM Z_PCDW_ODM_BOM B
+             WHERE B.FATHER_LENOVOPN = SUBSTR(A.SON_LENOVOPN, 1, 10)
+               AND A.ODM = B.ODM
+               AND SUBSTR(B.FATHER_LENOVOPN, 1, 10) =
+                   SUBSTR(B.SON_LENOVOPN, 1, 10));
+
+    COMMIT;
+    --end
+
+    FOR I IN 7 .. 12 LOOP
+      UPDATE Z_PCDW_ODM_BOM A
+         SET SON_LENOVOPN = SUBSTR(A.SON_LENOVOPN, 0, I),
+             FLAG         = 'Y'
+       WHERE A.ODM IN ('WISTRON', 'WISTRON ZS','WISTRON_VN_NB','WISTRON_VN')-- add cuigq4  VN 2025.2.24
+         AND EXISTS (SELECT 1
+                FROM PRDPCDW.Z_DSP_DIM_COMPONENT B
+               WHERE SUBSTR(A.SON_LENOVOPN, 0, I) = B.COMPONENT)
+         AND NOT EXISTS (SELECT 1
+                FROM PRDPCDW.Z_DSP_DIM_COMPONENT C
+               WHERE A.SON_LENOVOPN = C.COMPONENT)
+         AND FLAG IS NULL;
+
+    END LOOP;
+
+    COMMIT;
+
+    --solve the huaqin son-lenovopn is NA,by zy3 2018-7-5
+    UPDATE Z_PCDW_ODM_BOM A
+       SET SON_LENOVOPN = NULL
+     WHERE NVL(SON_LENOVOPN, ' ') IN ('NA', 'N/A', 'SNA', 'S-NA');
+
+    UPDATE Z_PCDW_ODM_BOM A
+       SET FATHER_LENOVOPN = NULL
+     WHERE NVL(FATHER_LENOVOPN, ' ') IN ('NA', 'N/A', 'SNA', 'S-NA');
+
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step8');
+
+    --2 cases
+    --1. delete the father = son and exists others father bom
+    --example: -- son_lenovopn = '5D10K85755'
+    DELETE Z_PCDW_ODM_BOM A
+     WHERE FATHER_LENOVOPN = SON_LENOVOPN
+       AND SON_ODMPN IS NOT NULL
+       AND EXISTS (SELECT 1
+              FROM Z_PCDW_ODM_BOM B
+             WHERE A.SON_LENOVOPN = B.SON_LENOVOPN
+               AND A.ODM = B.ODM
+               AND A.FATHER_LENOVOPN <> B.FATHER_LENOVOPN);
+    COMMIT;
+    --2. update the son lenovo pn is null
+    LOGGER.INFO(L_PROC_NAME || ' Step8.1');
+    UPDATE Z_PCDW_ODM_BOM A
+       SET SON_LENOVOPN = NULL
+     WHERE FATHER_LENOVOPN = SON_LENOVOPN
+       AND SON_ODMPN IS NOT NULL
+       AND NOT EXISTS
+     (SELECT 1
+              FROM Z_PCDW_ODM_BOM B
+             WHERE A.SON_LENOVOPN = B.SON_LENOVOPN
+               AND A.ODM = B.ODM
+               AND A.FATHER_LENOVOPN <> B.FATHER_LENOVOPN);
+
+    COMMIT;
+    --end
+
+    --Add by qinying4 for compal special case
+    EXECUTE IMMEDIATE 'truncate table  Z_CONF_COMPAL_BOM';
+
+    LOGGER.INFO(L_PROC_NAME || ' Step8.2');
+    INSERT INTO Z_CONF_COMPAL_BOM
+      SELECT FAMILY, ITEM AS SBB, SYSDATE
+        FROM Z_MID_FG_SBB_FCST
+       WHERE ITEMTYPE = 'CTO_SBB'
+         AND BU = 'IdeaNB'
+      UNION
+      SELECT /*+ use_hash(a b)  driving_site(a) */
+       FAMILY, B.SBB, SYSDATE
+        FROM Z_MID_FG_SBB_FCST A
+        JOIN Z_V_DIM_BOM_MTM B
+          ON A.PLANNING_ITEM_ID = B.PRODUCT
+       WHERE ITEMTYPE = 'MTM'
+         AND BU = 'IdeaNB';
+    COMMIT;
+
+    --solve the SBB->SBB bom  structure
+
+    LOGGER.INFO(L_PROC_NAME || ' Step8.3');
+    DELETE FROM Z_PCDW_ODM_BOM A
+     WHERE SON_LENOVOPN LIKE 'SBB%'
+       AND NOT EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_PRODUCT
+             WHERE PRODUCT = NVL(FATHER_LENOVOPN, FATHER_ODMPN))
+       AND NOT EXISTS
+     (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT
+             WHERE COMPONENT = NVL(FATHER_LENOVOPN, FATHER_ODMPN)
+               AND HIER1_CODE in ('ZERS','ZPPN'))--add ZPPN for DS parts which will have SBB -> SBB BOM structure by xuml7 20241223
+       AND NOT EXISTS (SELECT 1
+              FROM Z_CONF_COMPAL_BOM B
+             WHERE NVL(A.FATHER_LENOVOPN, ' ') = B.SBB)
+       AND A.ODM <> 'COMPAL';
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step 9');
+    --REMOVE SBB BETWEEN THE UP & DOWN PARTS
+    INSERT INTO Z_PCDW_ODM_BOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE)
+      SELECT /*+parallel(8)*/
+       A.ODM, A.FATHER_LENOVOPN, A.FATHER_ODMPN, B.SON_LENOVOPN, B.SON_ODMPN,
+       B.QTYPER, B.ALPGR, SUBSTR(B.ALPRF, 1, 4), B.EFFSTARTDATE, B.EFFENDDATE,
+       B.ODM_CREATED_DATE, G_LOGIC_NAME, SYSDATE
+        FROM Z_MID_SOURCE_ODMBOM A, Z_MID_SOURCE_ODMBOM B
+       WHERE A.ODM = 'LCFC'
+         AND A.SON_LENOVOPN LIKE 'SBB%'
+         AND A.FATHER_LENOVOPN NOT LIKE 'SBB%'
+         AND A.ODM = B.ODM
+         AND A.SON_ODMPN = B.FATHER_ODMPN
+         AND NOT EXISTS
+       (SELECT 1
+                FROM Z_PCDW_ODM_BOM C
+               WHERE A.ODM = C.ODM
+                 AND NVL(A.FATHER_LENOVOPN, 'null') =
+                     NVL(C.FATHER_LENOVOPN, 'null')
+                 AND NVL(A.FATHER_ODMPN, 'null') = NVL(C.FATHER_ODMPN, 'null')
+                 AND NVL(B.SON_LENOVOPN, 'null') = NVL(C.SON_LENOVOPN, 'null')
+                 AND NVL(B.SON_ODMPN, 'null') = NVL(C.SON_ODMPN, 'null'));
+    COMMIT;
+
+    DELETE FROM Z_PCDW_ODM_BOM
+     WHERE ODM = 'LCFC'
+       AND FATHER_LENOVOPN IN
+           (SELECT COMPONENT FROM PRDPCDW.Z_DSP_DIM_COMPONENT)
+       AND SON_LENOVOPN IN (SELECT SBB FROM Z_DSP_DIM_SBB);
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step9');
+    -- solve the quanta 1 sbb mapping multiple odmpn case
+    --ADD BY XUML7 to deal with SB20 mapping to different odmpn
+    EXECUTE IMMEDIATE 'truncate table z_mid_odm_bom_multi_map_bak';
+
+    INSERT INTO Z_MID_ODM_BOM_MULTI_MAP_BAK
+      (ODM, LENOVOPN, ODMPN)
+      SELECT DISTINCT ODM, FATHER_LENOVOPN, FATHER_ODMPN
+        FROM (SELECT ODM, FATHER_LENOVOPN, FATHER_ODMPN,
+                      COUNT(*) OVER(PARTITION BY ODM, FATHER_LENOVOPN) AS ROW_CNT,
+                      COUNT(*) OVER(PARTITION BY ODM, FATHER_LENOVOPN, FATHER_ODMPN) AS ODMPN_CNT
+                 FROM Z_PCDW_ODM_BOM A
+                WHERE SYS_CREATED_BY = G_LOGIC_NAME
+                  AND EFFENDDATE >= L_CRR_VERSION --added by zy3
+               )
+       WHERE ROW_CNT / ODMPN_CNT > 1
+         AND FATHER_ODMPN IS NOT NULL
+         AND FATHER_LENOVOPN IS NOT NULL;
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step10');
+    UPDATE Z_PCDW_ODM_BOM
+       SET FATHER_LENOVOPN = ''
+     WHERE (FATHER_LENOVOPN, FATHER_ODMPN) IN
+           (SELECT LENOVOPN, ODMPN
+              FROM Z_MID_ODM_BOM_MULTI_MAP_BAK A
+             WHERE LENOVOPN LIKE 'SB2%'
+               AND ODMPN NOT LIKE '451%'
+               AND ODM LIKE 'LCFC'
+               AND EXISTS (SELECT 1
+                      FROM Z_MID_ODM_BOM_MULTI_MAP_BAK B
+                     WHERE A.ODM = B.ODM
+                       AND A.LENOVOPN = B.LENOVOPN
+                       AND B.ODMPN LIKE '451%')
+               AND EXISTS (SELECT 1
+                      FROM Z_PCDW_ODM_INVENTORY_HIS C
+                     WHERE VERSIONYEAR = GV_VERSIONYEAR
+                       AND VERSIONWEEK = GV_VERSIONWEEK
+                       AND A.LENOVOPN = C.LENOVOPN
+                       AND A.ODM = C.ODM))
+       AND ODM = 'LCFC';
+    UPDATE Z_PCDW_ODM_BOM
+       SET FATHER_LENOVOPN = ''
+     WHERE (SON_LENOVOPN, SON_ODMPN) IN
+           (SELECT LENOVOPN, ODMPN
+              FROM Z_MID_ODM_BOM_MULTI_MAP_BAK A
+             WHERE LENOVOPN LIKE 'SB2%'
+               AND ODMPN NOT LIKE '451%'
+               AND ODM LIKE 'LCFC'
+               AND EXISTS (SELECT 1
+                      FROM Z_MID_ODM_BOM_MULTI_MAP_BAK B
+                     WHERE A.ODM = B.ODM
+                       AND A.LENOVOPN = B.LENOVOPN
+                       AND B.ODMPN LIKE '451%')
+               AND EXISTS (SELECT 1
+                      FROM Z_PCDW_ODM_INVENTORY_HIS C
+                     WHERE VERSIONYEAR = GV_VERSIONYEAR
+                       AND VERSIONWEEK = GV_VERSIONWEEK
+                       AND A.LENOVOPN = C.LENOVOPN
+                       AND A.ODM = C.ODM))
+       AND ODM = 'LCFC';
+    COMMIT;
+
+    --end add
+
+    EXECUTE IMMEDIATE 'truncate table z_mid_odm_bom_multi_map';
+    LOGGER.INFO(L_PROC_NAME || ' Step11');
+    INSERT INTO Z_MID_ODM_BOM_MULTI_MAP
+      (ODM, LENOVOPN, ODMPN)
+      SELECT DISTINCT ODM, FATHER_LENOVOPN, FATHER_ODMPN
+        FROM (SELECT ODM, FATHER_LENOVOPN, FATHER_ODMPN,
+                      COUNT(*) OVER(PARTITION BY ODM, FATHER_LENOVOPN) AS ROW_CNT,
+                      COUNT(*) OVER(PARTITION BY ODM, FATHER_LENOVOPN, FATHER_ODMPN) AS ODMPN_CNT
+                 FROM Z_PCDW_ODM_BOM A
+                WHERE SYS_CREATED_BY = G_LOGIC_NAME
+                  AND EFFENDDATE >= L_CRR_VERSION --added by zy3
+               )
+       WHERE ROW_CNT / ODMPN_CNT > 1
+         AND FATHER_ODMPN IS NOT NULL
+         AND FATHER_LENOVOPN IS NOT NULL;
+
+    COMMIT;
+    LOGGER.INFO(L_PROC_NAME || ' Step12');
+    INSERT INTO Z_PCDW_ODM_BOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE)
+      SELECT DISTINCT ODM, FATHER_LENOVOPN, NULL AS FATHER_ODMPN,
+                      FATHER_ODMPN AS SON_LENOVOPN, FATHER_ODMPN AS SON_ODMPN,
+                      1 AS QTYPER, '1' AS ALPGR, '99' AS ALPRF,
+                      TO_DATE('1971-1-1', 'yyyy-mm-dd') AS EFFSTARTDATE,
+                      TO_DATE('9999-12-31', 'yyyy-mm-dd') AS EFFENDDATE,
+                      SYSDATE AS ODM_CREATED_DATE,
+                      'BOM_ADJUST_INSERT' AS SYS_CREATED_BY, SYSDATE
+        FROM (SELECT ODM, FATHER_LENOVOPN, FATHER_ODMPN,
+                      COUNT(*) OVER(PARTITION BY ODM, FATHER_LENOVOPN) AS ROW_CNT,
+                      COUNT(*) OVER(PARTITION BY ODM, FATHER_LENOVOPN, FATHER_ODMPN) AS ODMPN_CNT
+                 FROM Z_PCDW_ODM_BOM A
+                WHERE SYS_CREATED_BY = G_LOGIC_NAME
+                  AND EFFENDDATE >= L_CRR_VERSION --added by zy3
+               )
+       WHERE ROW_CNT / ODMPN_CNT > 1
+         AND FATHER_ODMPN IS NOT NULL
+         AND FATHER_LENOVOPN IS NOT NULL;
+    LOGGER.INFO(L_PROC_NAME || ' Step13');
+    UPDATE Z_PCDW_ODM_BOM A
+       SET FATHER_LENOVOPN = FATHER_ODMPN,
+           SYS_CREATED_BY  = 'BOM_ADJUST_UPDATE'
+     WHERE SYS_CREATED_BY = G_LOGIC_NAME
+       AND (ODM, FATHER_LENOVOPN, FATHER_ODMPN) IN
+           (SELECT ODM, FATHER_LENOVOPN, FATHER_ODMPN
+              FROM (SELECT ODM, FATHER_LENOVOPN, FATHER_ODMPN,
+                            COUNT(*) OVER(PARTITION BY ODM, FATHER_LENOVOPN) AS ROW_CNT,
+                            COUNT(*) OVER(PARTITION BY ODM, FATHER_LENOVOPN, FATHER_ODMPN) AS ODMPN_CNT
+                       FROM Z_PCDW_ODM_BOM A
+                      WHERE SYS_CREATED_BY = G_LOGIC_NAME
+                        AND EFFENDDATE >= L_CRR_VERSION --added by zy3
+                     )
+             WHERE ROW_CNT / ODMPN_CNT > 1
+               AND FATHER_ODMPN IS NOT NULL
+               AND FATHER_LENOVOPN IS NOT NULL);
+
+    COMMIT;
+
+    --add by zy3 for fix the father -child - father bom
+    --and odmpn has child part
+
+    LOGGER.INFO(L_PROC_NAME || ' Step14');
+    UPDATE /*+ use_hash(a)*/ Z_PCDW_ODM_BOM A
+       SET SON_LENOVOPN   = NULL,
+           SYS_CREATED_BY = SYS_CREATED_BY || '_FIX'
+     WHERE SON_LENOVOPN IS NOT NULL
+       AND SON_ODMPN IS NOT NULL
+       AND SON_LENOVOPN <> SON_ODMPN
+       AND EXISTS (SELECT 1
+              FROM Z_MID_ODM_BOM_MULTI_MAP B
+             WHERE A.SON_LENOVOPN = B.LENOVOPN
+               AND A.SON_ODMPN = B.ODMPN
+               AND A.ODM = B.ODM)
+       AND EXISTS (SELECT 1
+              FROM Z_PCDW_ODM_BOM C
+             WHERE A.ODM = C.ODM
+               AND A.SON_ODMPN = C.FATHER_ODMPN);
+    COMMIT;
+     LOGGER.INFO(L_PROC_NAME || ' Step15');
+    --delete inactive bom--added by zy3
+    DELETE FROM Z_PCDW_ODM_BOM A WHERE EFFENDDATE < L_CRR_VERSION;
+
+     LOGGER.INFO(L_PROC_NAME || ' Step16');
+    DELETE FROM Z_PCDW_ODM_BOM
+     WHERE ODM = 'COMPAL'
+       AND FATHER_LENOVOPN IN ('5SB0R47677', '5SB0R47678');
+    COMMIT;
+
+     LOGGER.INFO(L_PROC_NAME || ' Step17');
+    --Add by qinying for nested loop BOM 20190405
+    DELETE FROM Z_PCDW_ODM_BOM
+     WHERE FATHER_LENOVOPN IN ('SA10R16873',
+                               'SB10K97655',
+                               'SB10K97656',
+                               'SA10R16867',
+                               'SA10R16871')
+       AND ODM = 'LCFC';
+
+    COMMIT;
+
+     LOGGER.INFO(L_PROC_NAME || ' Step18');
+    --------------------------------------FOR VN------------------------------------
+    -- sepecila logic for VN project which should add 36% level  to bom to solve out sourcing issue-- added by yangnan13 20250116
+    EXECUTE IMMEDIATE 'truncate table Z_PCDW_ODM_BOM_CVN';
+
+    INSERT INTO Z_PCDW_ODM_BOM_CVN
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE, FLAG)
+      SELECT FROM_ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN,
+             QTYPER, ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE,
+             SYS_CREATED_BY, SYS_CREATED_DATE, FLAG
+        FROM (SELECT FROM_ODM, LENOVO_PN AS FATHER_LENOVOPN,
+                      LENOVO_PN AS FATHER_ODMPN, ODM_PN SON_LENOVOPN,
+                      ODM_PN SON_ODMPN, 1 AS QTYPER, NULL AS ALPGR, 1 AS ALPRF,
+                      ODM_CREATED_DATE AS EFFSTARTDATE,
+                      DATE '9999-12-31' AS EFFENDDATE,
+                      CREATE_TIME AS ODM_CREATED_DATE,
+                      'odm_imp_source@PRDCSEN' AS SYS_CREATED_BY,
+                      CREATE_TIME AS SYS_CREATED_DATE, 'VN' AS FLAG,
+                      ROW_NUMBER() OVER(PARTITION BY FROM_ODM, LENOVO_PN, ODM_PN, ODM_CREATED_DATE ORDER BY FROM_ODM, LENOVO_PN, ODM_PN, ODM_CREATED_DATE, VERSION DESC) RN
+                 FROM I_SCC_INTEGRATION.ODM_IMP_SOURCE@PRD_CSEN
+                WHERE FROM_ODM = 'COMPAL_VN'
+                  AND LENOVO_PN LIKE '36%'
+                     --and ODM_PN like '45%'
+                  AND SUBSTR(VERSION, 1, 8) =
+                      (SELECT MAX(SUBSTR(VERSION, 1, 8))
+                         FROM I_SCC_INTEGRATION.ODM_IMP_SOURCE@PRD_CSEN))
+       WHERE RN = 1;
+    COMMIT;
+    
+--begin cuigq4 vn 25.2.24
+    --LCFC_bom dummy level
+    insert into Z_PCDW_ODM_BOM_CVN
+      (ODM,
+       FATHER_LENOVOPN,
+       FATHER_ODMPN,
+       SON_LENOVOPN,
+       SON_ODMPN,
+       QTYPER,
+       ALPGR,
+       ALPRF,
+       EFFSTARTDATE,
+       EFFENDDATE,
+       ODM_CREATED_DATE,
+       SYS_CREATED_BY,
+       SYS_CREATED_DATE,
+       FLAG)
+      select FROM_ODM,
+             FATHER_LENOVOPN,
+             FATHER_ODMPN,
+             SON_LENOVOPN,
+             SON_ODMPN,
+             QTYPER,
+             ALPGR,
+             ALPRF,
+             EFFSTARTDATE,
+             EFFENDDATE,
+             ODM_CREATED_DATE,
+             SYS_CREATED_BY,
+             SYS_CREATED_DATE,
+             FLAG
+        from (select FROM_ODM,
+                     LENOVO_PN AS FATHER_LENOVOPN,
+                     LENOVO_PN AS FATHER_ODMPN,
+                     ODM_PN SON_LENOVOPN,
+                     ODM_PN SON_ODMPN,
+                     1 AS QTYPER,
+                     NULL AS ALPGR,
+                     1 AS ALPRF,
+                     ODM_CREATED_DATE AS EFFSTARTDATE,
+                     DATE '9999-12-31' AS EFFENDDATE,
+                     CREATE_TIME as ODM_CREATED_DATE,
+                     'odm_imp_source@PRDCSEN' as SYS_CREATED_BY,
+                     CREATE_TIME AS SYS_CREATED_DATE,
+                     'VN' as flag,
+                     row_number() over(partition by FROM_ODM, LENOVO_PN, ODM_PN, ODM_CREATED_DATE order by FROM_ODM, LENOVO_PN, ODM_PN, ODM_CREATED_DATE, VERSION desc) rn
+                FROM I_SCC_INTEGRATION.odm_imp_source@PRD_CSEN
+               WHERE from_odm = 'LCFC_VN'
+                 and LENOVO_PN like 'PV%'
+                 and substr(version, 1, 8) =
+                             (select max(substr(version, 1, 8))
+                                from I_SCC_INTEGRATION.odm_imp_source@PRD_CSEN)
+                 )
+       where rn = 1;
+
+
+    commit;
+--end cuigq4 vn 25.2.24
+
+    DELETE FROM Z_PCDW_ODM_BOM WHERE FLAG = 'VN';
+    COMMIT;
+
+    INSERT INTO Z_PCDW_ODM_BOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+       ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE, FLAG)
+      SELECT ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER,
+             ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE,
+             SYS_CREATED_BY, SYS_CREATED_DATE, FLAG
+        FROM Z_PCDW_ODM_BOM_CVN;
+    COMMIT;
+
+    INSERT INTO Z_PCDW_ODM_BOM
+      (ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN, QTYPER, ALPGR,
+       ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE, FLAG)
+      SELECT 'HUAQIN_VN' ODM, FATHER_LENOVOPN, FATHER_ODMPN, SON_LENOVOPN, SON_ODMPN,
+             QTYPER, ALPGR, ALPRF, EFFSTARTDATE, EFFENDDATE, ODM_CREATED_DATE,
+             SYS_CREATED_BY, SYS_CREATED_DATE, FLAG
+        FROM Z_PCDW_ODM_BOM A
+       WHERE A.ODM = 'HUAQIN';
+    COMMIT;
+
+
+    LOGGER.INFO(L_PROC_NAME || ' Step19');
+
+    --add by xurt1 for item->sbb->x89
+    EXECUTE IMMEDIATE 'truncate table z_pcdw_odm_bom_bak_bak';
+    INSERT INTO Z_PCDW_ODM_BOM_BAK_BAK
+      SELECT * FROM Z_PCDW_ODM_BOM WHERE ODM = 'COMPAL';
+    COMMIT;
+    LOGGER.INFO(L_PROC_NAME || ' Step20');
+    DELETE FROM Z_PCDW_ODM_BOM A
+     WHERE ODM = 'LCFC'
+       AND A.FATHER_LENOVOPN IN
+           (SELECT DISTINCT ITEM
+              FROM Z_UI_SCC_SHARE
+             WHERE DISPLAY_TYPE NOT IN ('DS', 'DB', 'FLEX')
+               AND COMMODITY = 'Touchpanel');
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step21');
+    ------add by lp 20180813 begin---------------------
+    PRC_ODM_BOM_BAK(WFL_ID, NODE_ID, IV_ID, EXITCODE);
+    ------add by lp 20180813 end-----------------------
+
+    LOGGER.INFO(L_PROC_NAME || ' Step22');
+    ------add by zhongyao 2022-03-02 begin---------------------
+    PRC_ODM_BOM_BAK4_CPSP(WFL_ID, NODE_ID, IV_ID, EXITCODE);
+    ------add by zhongyao 2022-03-02 end-----------------------
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+  PROCEDURE PRC_ODM_INVENTORY(WFL_ID   VARCHAR2,
+                              NODE_ID  VARCHAR2,
+                              IV_ID    VARCHAR2,
+                              EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || '.PRC_ODM_INVENTORY';
+  BEGIN
+    EXITCODE := -20099;
+    /*    logger.wfl_id    := wfl_id;
+    logger.node_id   := node_id;
+    logger.log_level := 'ALL';*/
+
+    PKG_BASE_FUNCS.INIT_LOG_RUN(G_LOGIC_NAME || ':' || IV_ID);
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    /* *************************************************************************************
+    Backgroud : SA&V project partitial done , final inv source conclusion--- added by yangnan13 20240724
+    1) most odm inv using from scc
+    2) seldomly odm inv using from ftp--LITEON +MSI
+    ****************************************************************************************/
+    --step 1 SCC source
+    EXECUTE IMMEDIATE 'TRUNCATE table z_mid_source_odminv';
+    INSERT INTO Z_MID_SOURCE_ODMINV
+      (FLAG, STATUS, ODM, LENOVOPN, ODMPN, INV_QTY, EFFSTARTDATE, CTO_PO, BU,
+       ODM_CREATED_DATE, SYS_CREATED_BY, SYS_CREATED_DATE, BQTY)
+      SELECT /*+ use_hash(a c)  driving_site(b) */
+       'IN-ODM' AS FLAG, 'ACTIVE' AS STATUS, A.ODM, A.LENOVO_PN, A.ODM_PN,
+       SUM(A.ODM_QTY) AS ODM_QTY, MAX(A.CREATE_TIME) AS EFFSTARTDATE, A.PO, A.BU,
+       MAX(A.CREATE_TIME) AS ODM_CREATED_DATE, 'SCC', SYSDATE, NULL AS BQTY
+        FROM I_SCC_INTEGRATION.ODM_INVENTORY@PRD_CSEN A
+      -- left join I_SCC_INTEGRATION.ODM_LOCATION_MAPPING@PRD_CSEN  B
+      --on a.location = b.odm_location
+       WHERE A.VERSION = TO_CHAR(SYSDATE, 'YYYYMMDD')
+         AND A.BU NOT IN ('ISG', 'FCCL')
+         AND A.BU NOT LIKE 'Mobile%'
+         AND A.LENOVO_PN NOT IN ('N/A', ' ')
+            --and lower(b.status) = 'active'
+            --and lower(b.LOCATION_TYPE) = 'unrestricted'
+            --and b.flag = 'IN-ODM'
+         AND EXISTS
+       (SELECT 1
+                FROM (SELECT DISTINCT INV_SOURCE, PVALUE
+                         FROM Z_UI_CONF_PARAMETER
+                        WHERE PDOMAIN = 'ODM_CODE'
+                          AND (MONITOR_FLAG = 'N' OR PVALUE IN ('BOE', 'TPV'))) C --added monitor_flag='N' 20241105 zhangxf37
+               WHERE UPPER(A.ODM) = C.PVALUE
+                 AND C. INV_SOURCE = 'SCC')
+       GROUP BY A.ODM, A.LENOVO_PN, A.ODM_PN, A.PO, A.BU, A.VERSION;
+    COMMIT;
+
+    -- PTSN source from  i_scc_integration.odm_inventory@uatcsen_lk   20241213
+
+    LOGGER.INFO(L_PROC_NAME || ' Step0.1');
+    -- deal with PTSN logic -- added by yangnan13 20241213
+    INSERT INTO Z_MID_SOURCE_ODMINV
+      (FLAG, STATUS, ODM, LENOVOPN, ODMPN, INV_QTY, EFFSTARTDATE, CTO_PO, BU,
+       ODM_CREATED_DATE, SYS_CREATED_BY, SYS_CREATED_DATE, BQTY)
+      WITH TMP AS
+       (SELECT /*+ materialize */
+         ODM, MAX(VERSION) VERSION
+          FROM I_SCC_INTEGRATION.ODM_INVENTORY@UATCSEN_LK
+         GROUP BY ODM)
+      SELECT /*+use_hash(a,c) driving_site(a) */
+       'IN-ODM' AS FLAG, 'ACTIVE' AS STATUS, A.ODM, A.LENOVO_PN, A.ODM_PN,
+       SUM(A.ODM_QTY) AS ODM_QTY, MAX(A.CREATE_TIME) AS EFFSTARTDATE, A.PO, A.BU,
+       MAX(A.CREATE_TIME) AS ODM_CREATED_DATE, 'SCC', SYSDATE, NULL AS BQTY
+        FROM I_SCC_INTEGRATION.ODM_INVENTORY@UATCSEN_LK A
+       WHERE A.BU NOT IN ('ISG', 'FCCL')
+         AND A.BU NOT LIKE 'Mobile%'
+         AND A.LENOVO_PN NOT IN ('N/A', ' ')
+         AND A.ODM = 'PTSN'
+         AND EXISTS (SELECT 1
+                FROM TMP B
+               WHERE A.VERSION = B.VERSION
+                 AND A.ODM = B.ODM)
+         AND EXISTS
+       (SELECT 1
+                FROM I_SCC_INTEGRATION.ODM_LOCATION_MAPPING@PRD_CSEN B
+               WHERE B.ODM = 'PTSN'
+                 AND B.STATUS = 'Active'
+                 AND B.LOCATION_TYPE IN ('inspection', 'unrestricted')
+                 AND A.ODM = B.ODM
+                 AND A.LOCATION = B.ODM_LOCATION)
+       GROUP BY A.ODM, A.LENOVO_PN, A.ODM_PN, A.PO, A.BU;
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step0.15');
+    --get the monitor_flag is equal to Y except for BOE 20241105 zhangxf37
+    INSERT INTO Z_MID_SOURCE_ODMINV
+      (FLAG, STATUS, ODM, LENOVOPN, ODMPN, INV_QTY, EFFSTARTDATE, CTO_PO, BU,
+       ODM_CREATED_DATE, SYS_CREATED_BY, SYS_CREATED_DATE, BQTY)
+      SELECT /*+use_hash(a,c) driving_site(a) */
+       'IN-ODM' AS FLAG, 'ACTIVE' AS STATUS, A.ODM, A.LENOVO_PN, A.ODM_PN,
+       SUM(A.ODM_QTY) AS ODM_QTY, MAX(A.CREATE_TIME) AS EFFSTARTDATE, A.PO, A.BU,
+       MAX(A.CREATE_TIME) AS ODM_CREATED_DATE, 'SCC', SYSDATE, NULL AS BQTY
+        FROM I_SCC_INTEGRATION.ODM_INVENTORY@UATCSEN_LK A
+       WHERE A.VERSION = TO_CHAR(SYSDATE, 'YYYYMMDD')
+         AND A.BU NOT IN ('ISG', 'FCCL')
+         AND A.BU NOT LIKE 'Mobile%'
+         AND A.LENOVO_PN NOT IN ('N/A', ' ')
+         AND EXISTS (SELECT 1
+                FROM Z_UI_CONF_PARAMETER C
+               WHERE UPPER(A.ODM) = C.PVALUE
+                 AND C.INV_SOURCE = 'SCC'
+                 AND C.PDOMAIN = 'ODM_CODE'
+                 AND C.MONITOR_FLAG = 'Y'
+                 AND C.PVALUE NOT IN ('BOE', 'TPV'))
+      /*    and exists (select null
+       from z_dsp_dim_product d
+      where d.itemclass = 'MONITOR'
+        and nvl(a.lenovo_pn, a.odm_pn) = d.product)*/
+       GROUP BY A.ODM, A.LENOVO_PN, A.ODM_PN, A.PO, A.BU, A.VERSION;
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step0.2');
+    --step 2 FTP source
+    INSERT INTO Z_MID_SOURCE_ODMINV
+      (FLAG, STATUS, ODM, LENOVOPN, ODMPN, INV_QTY, EFFSTARTDATE, CTO_PO, BU,
+       ODM_CREATED_DATE, SYS_CREATED_BY, SYS_CREATED_DATE, BQTY)
+      SELECT NULL AS FLAG, NULL AS STATUS, ODM, LENOVOPN, ODMPN, INV_QTY,
+             EFFSTARTDATE, CTO_PO, BU, ODM_CREATED_DATE, 'FTP', SYSDATE,
+             NULL AS BQTY
+        FROM PRDPCDW.IMP_ODM_INVENTORY@PRDMDMN_LK_11G A
+       WHERE EXISTS (SELECT 1
+                FROM (SELECT DISTINCT INV_SOURCE, PVALUE
+                         FROM Z_UI_CONF_PARAMETER
+                        WHERE PDOMAIN = 'ODM_CODE') C
+               WHERE A.ODM = C.PVALUE
+                 AND C. INV_SOURCE = 'FTP'); -- yangnan13 2024/10/18
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step1');
+    EXECUTE IMMEDIATE 'TRUNCATE table z_pcdw_odm_inventory';
+    INSERT INTO Z_PCDW_ODM_INVENTORY
+      (ODM, LENOVOPN, ODMPN, INV_QTY, EFFSTARTDATE, CTO_PO, BU,
+       ODM_CREATED_DATE, SYS_CREATED_BY, SYS_CREATED_DATE)
+      SELECT DECODE(UPPER(ODM), 'FOXCONNL6', 'FOXCONN', ODM),
+             NVL(LENOVOPN, ODMPN), ODMPN, INV_QTY, EFFSTARTDATE, CTO_PO,
+             FUNC_ODMPN_FORMAT(BU), ODM_CREATED_DATE, 'PKG_PCDW_TO_MRP', SYSDATE
+        FROM Z_MID_SOURCE_ODMINV;
+
+    COMMIT;
+
+    --BU
+    /*UPDATE z_pcdw_odm_inventory
+       SET bu = decode(odm, 'QUANTA', decode(cto_po, 'LBG', 'IDEANB', 'TBG', 'THINKNB', bu), 'LCFC',
+                       decode(bu, 'T-NB', 'THINKNB','T-WS', 'WorkStation', 'L-DT', 'IDEADT', 'T-SSD', NULL, 'L-NB', 'IDEANB', 'T-SV',
+                               NULL, 'SD', NULL, bu), bu)
+     WHERE odm IN ('LCFC', 'QUANTA');
+    COMMIT;*/
+    --edit by xuml7 20210629 for remove lcfc useless inv
+    UPDATE Z_PCDW_ODM_INVENTORY
+       SET BU = DECODE(ODM,
+                       'QUANTA',
+                       DECODE(CTO_PO, 'LBG', 'IDEANB', 'TBG', 'THINKNB', BU),
+                       'LCFC',
+                       DECODE(BU,
+                              'T-NB',
+                              'THINKNB',
+                              'T-DT',
+                              'THINKDT',
+                              'L-DT',
+                              'IDEADT',
+                              'L-NB',
+                              'IDEANB',
+                              'T-WS',
+                              'WorkStation',
+                              'T-SSD',
+                              'NOUSE',
+                              'T-SV',
+                              'NOUSE',
+                              'SD',
+                              'NOUSE',
+                              'JV-EC',
+                              'NOUSE',
+                              'JV-NBI',
+                              'NOUSE',
+                              'JV-SVC',
+                              'NOUSE',
+                              BU),
+                       BU)
+     WHERE ODM IN ('LCFC', 'QUANTA');
+    COMMIT;
+
+    UPDATE Z_PCDW_ODM_INVENTORY A
+       SET LENOVOPN = SUBSTR(A.ODMPN, 0, 7)
+     WHERE A.ODM IN ('WISTRON', 'WISTRON ZS','WISTRON_VN','WISTRON_VN_NB')--add cuigq4 25.2.24 vn
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW B
+             WHERE SUBSTR(A.ODMPN, 0, 7) = B.COMPONENT)
+       AND NOT EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW C
+             WHERE A.LENOVOPN = C.COMPONENT);
+
+    COMMIT;
+
+    UPDATE Z_PCDW_ODM_INVENTORY A
+       SET LENOVOPN = SUBSTR(A.ODMPN, 0, 10)
+     WHERE A.ODM IN ('WISTRON', 'WISTRON ZS','WISTRON_VN','WISTRON_VN_NB')--add cuigq4 25.2.24 vn
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW B
+             WHERE SUBSTR(A.ODMPN, 0, 10) = B.COMPONENT)
+       AND NOT EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW C
+             WHERE A.LENOVOPN = C.COMPONENT);
+
+    COMMIT;
+    UPDATE Z_PCDW_ODM_INVENTORY
+       SET LENOVOPN = REPLACE(LENOVOPN, 'ForLCFC', '')
+     WHERE ODM = 'BITLAND'
+       AND INSTR(LENOVOPN, 'ForLCFC') > 0;
+    COMMIT; --add by xurt1 for error PN in BITLAND(SSA0X01084for LCFC)
+
+    --add by xuml7 for compal inv which have '/'
+    UPDATE Z_PCDW_ODM_INVENTORY
+       SET LENOVOPN = REGEXP_SUBSTR(LENOVOPN, '[^/]+', 1, 1)
+     WHERE LENOVOPN LIKE '%/%'
+       AND ODM = 'COMPAL';
+    COMMIT;
+    --end add 20210224
+
+    LOGGER.INFO(L_PROC_NAME || ' Step1');
+
+    IF TO_NUMBER(TO_CHAR(SYSDATE, 'D', 'NLS_DATE_LANGUAGE = American')) = 5 /*v_snapdate*/ -- yangnan 13 2024/10/18  for testing , should restore later
+     THEN
+      EXECUTE IMMEDIATE 'ALTER TABLE Z_PCDW_ODM_INVENTORY_HIS TRUNCATE SUBPARTITION P_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'YYYY') || '_W_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'WW');
+
+      INSERT INTO Z_PCDW_ODM_INVENTORY_HIS
+        (VERSIONYEAR, VERSIONWEEK, VERSIONDATE, ODM, LENOVOPN, ODMPN, INV_QTY,
+         EFFSTARTDATE, CTO_PO, BU, ODM_CREATED_DATE, SYS_CREATED_BY,
+         SYS_CREATED_DATE)
+        SELECT TRUNC(V_CURRENTWEEK, 'yyyy'), TO_CHAR(V_CURRENTWEEK, 'ww'),
+               V_CURRENTWEEK, ODM, PKG_BASE_FUNCS.GET_MATNR_INPUT(LENOVOPN),
+               PKG_BASE_FUNCS.GET_MATNR_INPUT(ODMPN), INV_QTY, EFFSTARTDATE,
+               CTO_PO, BU, ODM_CREATED_DATE, SYS_CREATED_BY, SYS_CREATED_DATE
+          FROM Z_PCDW_ODM_INVENTORY;
+      COMMIT;
+      LOGGER.INFO(L_PROC_NAME || ' Step2');
+      --UPDATE FOR MATCH CODE  BY ZHAIBO 20180112
+      UPDATE Z_PCDW_ODM_INVENTORY_HIS
+         SET BU = REPLACE(CTO_PO, CHR(13), '')
+       WHERE ODM = 'QUANTA'
+         AND VERSIONDATE = V_CURRENTWEEK;
+      COMMIT;
+
+      ---bu for WISTRON COMP, eg lenovo item is ***AA, or 0000+ odm item
+      UPDATE Z_PCDW_ODM_INVENTORY_HIS
+         SET BU = 'THINKNB'
+       WHERE VERSIONDATE = V_CURRENTWEEK
+         AND ODM = 'WISTRON'
+         AND PKG_BASE_FUNCS.GET_MATNR_INPUT(ODMPN) <>
+             PKG_BASE_FUNCS.GET_MATNR_INPUT(LENOVOPN) --ODMPN <> LENOVOPN
+         AND LENOVOPN IS NOT NULL;
+      --AND INSTR(ODMPN, LENOVOPN) > 0
+      --AND LENGTH(ODMPN) > LENGTH(LENOVOPN);
+
+      COMMIT;
+
+      --- bu for WISTRON COMP
+      UPDATE Z_PCDW_ODM_INVENTORY_HIS A
+         SET BU = 'IDEANB'
+       WHERE ODM = 'WISTRON'
+         AND VERSIONDATE = V_CURRENTWEEK
+         AND PKG_BASE_FUNCS.GET_MATNR_INPUT(ODMPN) =
+             PKG_BASE_FUNCS.GET_MATNR_INPUT(LENOVOPN) -- ODMPN = LENOVOPN
+         AND EXISTS (SELECT 1
+                FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW B
+               WHERE A.LENOVOPN = B.COMPONENT
+                 AND B.COMPONENT NOT LIKE 'SBB%'); --add filter to filter out odm sfg part number 20180131
+      COMMIT;
+
+      --DETERMINE bu for WISTRON MTM
+      UPDATE Z_PCDW_ODM_INVENTORY_HIS A
+         SET BU =
+             (SELECT BU /*HIER6_CODE*/
+                FROM PRDPCDW.Z_DSP_DIM_PRODUCT@PRDMDMN_19C_NEW B
+               WHERE A.LENOVOPN = B.PRODUCT)
+       WHERE EXISTS (SELECT 1
+                FROM PRDPCDW.Z_DSP_DIM_PRODUCT@PRDMDMN_19C_NEW C
+               WHERE A.LENOVOPN = C.PRODUCT)
+         AND ODM = 'WISTRON'
+         AND VERSIONDATE = V_CURRENTWEEK;
+
+      COMMIT;
+
+      ---bu for WISTRON OPTION
+      /*UPDATE Z_PCDW_ODM_INVENTORY_HIS
+         SET BU = 'THINKNB'
+       WHERE versiondate = v_currentweek
+         and ODM = 'WISTRON'
+         AND BU = 'OPTION';
+
+      COMMIT;*/
+      --edit by xuml7 20231115 for wangqun10&zhaojq7
+      UPDATE Z_PCDW_ODM_INVENTORY_HIS A
+         SET BU =
+             (SELECT CASE
+                       WHEN B.BRAND = 'IDEAOPTION' THEN
+                        'IDEANB'
+                       ELSE
+                        'THINKNB'
+                     END
+                FROM PRDPCDW.Z_DSP_DIM_PRODUCT@PRDMDMN_19C_NEW B
+               WHERE A.LENOVOPN = B.PRODUCT)
+       WHERE EXISTS (SELECT 1
+                FROM PRDPCDW.Z_DSP_DIM_PRODUCT@PRDMDMN_19C_NEW C
+               WHERE A.LENOVOPN = C.PRODUCT
+                 AND C.HIER6_CODE = 'OPTION')
+         AND ODM = 'WISTRON'
+         AND VERSIONDATE = V_CURRENTWEEK;
+      COMMIT;
+
+      ---bu for Wistron SFG
+      UPDATE Z_PCDW_ODM_INVENTORY_HIS A
+         SET BU =
+             (SELECT BU
+                FROM Z_MID_MAT_UTIL_COMP_BU_FAMILY B
+               WHERE A.ODMPN = B.COMP
+                 AND A.ODM = B.WERKS
+                 AND ROWNUM = 1)
+       WHERE EXISTS (SELECT 1
+                FROM Z_MID_MAT_UTIL_COMP_BU_FAMILY C
+               WHERE A.ODMPN = C.COMP
+                 AND A.ODM = C.WERKS)
+         AND ODM = 'WISTRON'
+         AND VERSIONDATE = V_CURRENTWEEK
+            --AND LENOVOPN IS NULL
+         AND BU IS NULL;
+
+      COMMIT;
+      ---END CHANGE
+
+    END IF;
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+  PROCEDURE PRC_ALLSOURCE_SUPPLY(WFL_ID   VARCHAR2,
+                                 NODE_ID  VARCHAR2,
+                                 IV_ID    VARCHAR2,
+                                 EXITCODE OUT NUMBER) AS
+    V_PROC_NAME VARCHAR2(40) := 'PRC_ALLSOURCE_SUPPLY';
+    SQL_DTPN    VARCHAR2(4000);
+  BEGIN
+    EXITCODE := -1;
+
+    LOGGER.NODE_ID := NODE_ID;
+
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    LOGGER.INFO(V_PROC_NAME || ' Start');
+
+    /****************************************LOI + SFG SOI from other souce**************************************************/
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 0 START');
+    ---need added below inventory for BS enhancement as BS will output separately BS pegging results
+    --1 SOI  SFG DATA
+    --2. PRDMRPDT/NB LOI PARTS +SBB+SFG
+    --3. HUB LOI
+    --4. SFG SOI
+    --5. SFG WIP
+    --6. PRDMRPDT/NB FG--MTM SBB
+    --7. PRDMRPDT/NB FG-- WIP
+    --8. PRDMRPDT/NB FG--CTO
+    --9. LTF+ LIABILITY  from SCC
+    -- step1 PRDMRPDT/NB LOI parts
+
+    EXECUTE IMMEDIATE 'TRUNCATE TABLE Z_MID_SUPPLY_ALL';
+    /*DELETE FROM Z_MID_SUPPLY_ALL
+     WHERE INV_TYPE NOT IN ('OOI', 'LIABILITY', 'LTF');
+    COMMIT;*/
+
+    --1.1  NB  SOI  SFG DATA
+    LOGGER.INFO(V_PROC_NAME || ' Step start');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SUPPLIERID, SOURCE)
+      SELECT ITEM, MFGSITE, NULL AS ODM_ITEM, SUM(AVAIL_LENOVO_MP) AS Z_INV,
+             'SOI' AS INV_TYPE, 'SOI' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             SUPPLIERID, 'MRPNB_SNAP_INV' AS SOURCE
+        FROM Z_SNAP_MRP_INVENTORY_NB A
+       WHERE SUPPLIERID <> 'X'
+         AND MFGSITE <> 'T220'
+         AND MFGSITE NOT LIKE 'C1%'
+         AND EXISTS
+       (SELECT 1
+                FROM Z_DSP_DIM_COMPONENT C
+               WHERE HIER5_CODE IN (SELECT PVALUE
+                                      FROM Z_UI_CONF_PARAMETER
+                                     WHERE PDOMAIN = 'OEM_PART'
+                                       AND PNAME = 'BASIC_NAME')
+                 AND A.ITEM = C.COMPONENT)
+       GROUP BY ITEM, MFGSITE, SUPPLIERID
+      HAVING SUM(A.AVAIL_LENOVO_MP) > 0;
+    COMMIT;
+    --1.2 NB SOI  PN DATA
+    LOGGER.INFO(V_PROC_NAME || ' Step 0.5');
+
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SUPPLIERID, SOURCE)
+      SELECT ITEM, MFGSITE, NULL AS ODM_ITEM, SUM(AVAIL_LENOVO_MP) AS Z_INV,
+             'SOI' AS INV_TYPE, 'SOI' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             SUPPLIERID, 'MRPNB_SNAP_INV' AS SOURCE
+        FROM Z_SNAP_MRP_INVENTORY_NB A
+       WHERE SUPPLIERID <> 'X'
+         AND MFGSITE <> 'T220'
+         AND MFGSITE NOT LIKE 'C1%'
+         AND NOT EXISTS
+       (SELECT 1
+                FROM Z_DSP_DIM_COMPONENT C
+               WHERE HIER5_CODE IN (SELECT PVALUE
+                                      FROM Z_UI_CONF_PARAMETER
+                                     WHERE PDOMAIN = 'OEM_PART'
+                                       AND PNAME = 'BASIC_NAME')
+                 AND A.ITEM = C.COMPONENT)
+       GROUP BY ITEM, MFGSITE, SUPPLIERID
+      HAVING SUM(A.AVAIL_LENOVO_MP) > 0;
+    COMMIT;
+    --1.3 DT SOI  SFG DATA
+    LOGGER.INFO(V_PROC_NAME || ' Step 0.6');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SUPPLIERID, SOURCE)
+      SELECT ITEM, MFGSITE, NULL AS ODM_ITEM, SUM(AVAIL_LENOVO_MP) AS Z_INV,
+             'SOI' AS INV_TYPE, 'SOI' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             SUPPLIERID, 'MRPDT_SNAP_INV' AS SOURCE
+        FROM Z_SNAP_MRP_INVENTORY_DT A
+       WHERE SUPPLIERID <> 'X'
+         AND MFGSITE NOT LIKE 'C1%'
+         AND EXISTS
+       (SELECT 1
+                FROM Z_DSP_DIM_COMPONENT C
+               WHERE HIER5_CODE IN (SELECT PVALUE
+                                      FROM Z_UI_CONF_PARAMETER
+                                     WHERE PDOMAIN = 'OEM_PART'
+                                       AND PNAME = 'BASIC_NAME')
+                 AND A.ITEM = C.COMPONENT)
+       GROUP BY ITEM, MFGSITE, SUPPLIERID
+      HAVING SUM(A.AVAIL_LENOVO_MP) > 0;
+    COMMIT;
+
+    --1.4   DT SOI  PN DATA
+    LOGGER.INFO(V_PROC_NAME || ' Step 0.7');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SUPPLIERID, SOURCE)
+      SELECT ITEM, MFGSITE, NULL AS ODM_ITEM, SUM(AVAIL_LENOVO_MP) AS Z_INV,
+             'SOI' AS INV_TYPE, 'SOI' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             SUPPLIERID, 'MRPDT_SNAP_INV' AS SOURCE
+        FROM Z_SNAP_MRP_INVENTORY_DT A
+       WHERE SUPPLIERID <> 'X'
+         AND MFGSITE NOT LIKE 'C1%'
+         AND NOT EXISTS
+       (SELECT 1
+                FROM Z_DSP_DIM_COMPONENT C
+               WHERE HIER5_CODE IN (SELECT PVALUE
+                                      FROM Z_UI_CONF_PARAMETER
+                                     WHERE PDOMAIN = 'OEM_PART'
+                                       AND PNAME = 'BASIC_NAME')
+                 AND A.ITEM = C.COMPONENT)
+       GROUP BY ITEM, MFGSITE, SUPPLIERID
+      HAVING SUM(A.AVAIL_LENOVO_MP) > 0;
+    COMMIT;
+    --2. PRDMRPDT/NB LOI PARTS +SBB+SFG
+    LOGGER.INFO(V_PROC_NAME || ' Step 1');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (SITEID, ITEM, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, LGORT, SUPPLIERID, SOURCE)
+      SELECT A.MFGSITE, A.ITEM, NULL AS ODM_ITEM,
+             SUM(A.AVAIL_LENOVO_MP) AS Z_INV, 'LOI' AS INV_TYPE,
+             'LOI' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU, A.LGORT,
+             A.SUPPLIERID, 'MRPNB_SNAP_INV' AS SOURCE
+        FROM Z_SNAP_MRP_INVENTORY_NB A
+       WHERE LGORT NOT IN (SELECT LGORT
+                             FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                            WHERE TYPE = 'FG_GEO')
+         AND SUPPLIERID = 'X'
+         AND A.MFGSITE NOT LIKE 'C1%'
+         AND NOT EXISTS
+       (SELECT 1 FROM Z_DSP_DIM_PRODUCT B WHERE A.ITEM = B.PRODUCT)
+       GROUP BY A.ITEM, A.MFGSITE, A.LGORT, A.SUPPLIERID
+      HAVING SUM(A.AVAIL_LENOVO_MP) > 0;
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 2');
+
+    -- inv wangxuan -- added L210, X210, E010'logic
+    --begin
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (SITEID, ITEM, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, LGORT, SUPPLIERID, SOURCE, FLAG, OWNER)
+      SELECT A.MFGSITE, A.ITEM, NULL AS ODM_ITEM,
+             SUM(A.AVAIL_LENOVO_MP) AS Z_INV, 'LOI' AS INV_TYPE,
+             'LOI' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU, A.LGORT,
+             A.SUPPLIERID, 'MRPDT_SNAP_INV' AS SOURCE, 'INV' AS FLAG,
+             NULL AS OWNER
+        FROM Z_SNAP_MRP_INVENTORY_DT A
+       WHERE LGORT NOT IN (SELECT LGORT
+                             FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                            WHERE TYPE = 'FG_GEO')
+         AND MFGSITE IN (SELECT LOC FROM LOC)
+         AND SUPPLIERID = 'X'
+         AND MFGSITE IN ('L210', 'X210', 'E010') -- added by wanggang38 for MEX X210 migration 20231205
+         AND NOT EXISTS (SELECT 1 --add by xuml7 for one pn both in product & component 20220316
+                FROM PRDMRPDT.Z_MV_DIM_PRODUCT@PRDMDMN_19C_NEW B
+               WHERE A.ITEM = B.PRODUCT)
+         AND NOT EXISTS (SELECT 1
+                FROM PRDMRPDT.UI_SHARED_PARTS@PRDMDMN_19C_NEW B
+               WHERE A.ITEM = B.ITEM
+                 AND A.MFGSITE = B.SITE
+                 AND A.LGORT = 'MRWS') --add by xuml7 for WS
+       GROUP BY ITEM, MFGSITE, A.LGORT, A.SUPPLIERID
+      HAVING SUM(AVAIL_LENOVO_MP) > 0
+      UNION ALL
+      SELECT A.MFGSITE, A.ITEM, NULL AS ODM_ITEM,
+             SUM(A.AVAIL_LENOVO_MP) AS Z_INV, 'LOI' AS INV_TYPE,
+             'LOI' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU, A.LGORT,
+             A.SUPPLIERID, 'MRPDT_SNAP_INV' AS SOURCE, 'INV' AS FLAG,
+             'WS' AS OWNER
+        FROM Z_SNAP_MRP_INVENTORY_DT A
+       WHERE EXISTS
+       (SELECT 1 FROM Z_DSP_DIM_COMPONENT B WHERE B.COMPONENT = A.ITEM)
+         AND LGORT NOT IN (SELECT LGORT
+                             FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                            WHERE TYPE = 'FG_GEO')
+         AND MFGSITE IN (SELECT LOC FROM LOC)
+         AND SUPPLIERID = 'X'
+         AND MFGSITE IN ('L210', 'X210', 'E010') -- added by wanggang38 for MEX X210 migration 20231205
+         AND NOT EXISTS (SELECT 1 --add by xuml7 for one pn both in product & component 20220316
+                FROM PRDMRPDT.Z_MV_DIM_PRODUCT@PRDMDMN_19C_NEW B
+               WHERE A.ITEM = B.PRODUCT)
+         AND EXISTS (SELECT 1
+                FROM PRDMRPDT.UI_SHARED_PARTS@PRDMDMN_19C_NEW B
+               WHERE A.ITEM = B.ITEM
+                 AND A.MFGSITE = B.SITE
+                 AND A.LGORT = 'MRWS') --add by xuml7 for WS
+       GROUP BY ITEM, MFGSITE, A.LGORT, A.SUPPLIERID
+      HAVING SUM(AVAIL_LENOVO_MP) > 0
+      UNION ALL
+      SELECT A.MFGSITE, A.ITEM, NULL AS ODM_ITEM,
+             SUM(A.AVAIL_LENOVO_MP) AS Z_INV, 'LOI' AS INV_TYPE,
+             'LOI' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU, A.LGORT,
+             A.SUPPLIERID, 'MRPDT_SNAP_INV' AS SOURCE, 'INV' AS FLAG,
+             'WS' AS OWNER
+        FROM Z_SNAP_MRP_INVENTORY_DT A
+       WHERE LGORT NOT IN (SELECT LGORT
+                             FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                            WHERE TYPE = 'FG_GEO')
+         AND SUPPLIERID = 'X'
+         AND A.MFGSITE NOT LIKE 'C1%'
+         AND MFGSITE NOT IN ('L210', 'X210', 'E010')
+         AND NOT EXISTS
+       (SELECT 1 FROM Z_DSP_DIM_PRODUCT B WHERE A.ITEM = B.PRODUCT)
+       GROUP BY A.ITEM, A.MFGSITE, A.LGORT, A.SUPPLIERID
+      HAVING SUM(A.AVAIL_LENOVO_MP) > 0;
+    COMMIT;
+
+    --L210, X210, E010'logic end;
+
+    -- Monitor enhancement logic  synch production 2024-10-24
+    --backgroud monitor has big small group , should add small group monitor into big monitor group -->Z_MID_SUPPLY_TMP
+    --Monitor go-live 20240129
+    --add wanggang38 2024-1-5 start
+    UPDATE Z_MID_SUPPLY_ALL A
+       SET A.Z_INV = NVL(A.Z_INV, 0) +
+                     (SELECT NVL(B.QTY, 0)
+                        FROM (SELECT SITEID, FLAG, OWNER, SUM(QTY) QTY, FCST_PN
+                                 FROM V_INV_ITEM_FCST_PN
+                                GROUP BY SITEID, FLAG, OWNER, FCST_PN) B
+                       WHERE A.ITEM = B.FCST_PN
+                         AND A.SITEID = B.SITEID /* and a.FLAG=b.FLAG and nvl(a.OWNER,'x')=nvl(b.OWNER,'x')*/
+                      )
+     WHERE EXISTS (SELECT 1
+              FROM V_INV_ITEM_FCST_PN B
+             WHERE A.ITEM = B.FCST_PN
+               AND A.SITEID = B.SITEID /* and a.FLAG=b.FLAG and nvl(a.OWNER,'x')=nvl(b.OWNER,'x')*/
+            );
+
+    UPDATE Z_MID_SUPPLY_ALL A
+       SET A.ITEM =
+           (SELECT B.FCST_PN
+              FROM V_INV_ITEM_FCST_PN B
+             WHERE A.ITEM = B.ITEM
+               AND A.SITEID = B.SITEID /*and a.FLAG=b.FLAG and nvl(a.OWNER,'x')=nvl(b.OWNER,'x')*/
+            )
+     WHERE EXISTS (SELECT 1
+              FROM V_INV_ITEM_FCST_PN B
+             WHERE A.ITEM = B.ITEM
+               AND A.SITEID = B.SITEID /*and a.FLAG=b.FLAG and nvl(a.OWNER,'x')=nvl(b.OWNER,'x')*/
+            );
+
+    DELETE FROM Z_MID_SUPPLY_ALL A
+     WHERE EXISTS (SELECT 1
+              FROM Z_MID_SUPPLY_TMP B
+             WHERE A.ITEM = B.ITEM
+               AND A.SITEID = B.SITEID);
+
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (SITEID, ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE)
+      SELECT SITEID, ITEM, QTY, 'LOI' AS INV_TYPE, 'LOI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_INV' AS SOURCE
+        FROM PRDMRPDT.Z_MID_SUPPLY_TMP@PRDMDMN_19C_NEW;
+    COMMIT;
+    --add wanggang38 2024-1-5 end
+
+    --3. HUB LOI
+    --3.1  INV_THK --> LOC_NAME IS NULL
+    LOGGER.INFO(V_PROC_NAME || ' Step 5');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (SITEID, ITEM, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, LGORT, SUPPLIERID, SOURCE)
+      SELECT A.WERKS, A.MATNR, NULL AS ODM_ITEM,
+             SUM(A.UNRESTRICTED_QTY) AS Z_INV, 'HUB_LOI' AS INV_TYPE,
+             'HUB_LOI' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'THINK' AS BU,
+             A.LGORT AS LGORT, A.LIFNR AS SUPPLIERID, 'THKOEM_HUB' AS SOURCE
+        FROM PRDSPOEMTHK.Z_SNP_PCDW_ECC_INVENTORY@PRDMDMN_LK_11G A,
+             PRDSPOEMTHK.CONF_XN_HUB_MAPPING@PRDMDMN_LK_11G B
+       WHERE A.WERKS = B.PLANT
+         AND A.LGORT = B.LGORT
+         AND A.Z_WFNAME = 'THKODM' ----inventory finance project baiying added 20220621
+         AND B.LOC_NAME IS NULL ----FLAG 1
+         AND SUBSTR(B.BU, 0, 4) <> 'Idea' ---FLAG2
+         AND INVENTORY_TYPE = 'LOI'
+         AND A.WERKS NOT LIKE 'C1%'
+       GROUP BY A.WERKS, A.MATNR, A.LGORT, A.LIFNR;
+    COMMIT;
+    --3.2  INV_THK --> LOC_NAME IS NOT NULL
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 6');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (SITEID, ITEM, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, ORDERID, LINEID, LGORT, GEO, SUBGEO, BRAND, CHANNEL,
+       SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT, BIZ_UNIT, ITEMCLASS, SOURCE)
+      WITH E AS
+       (SELECT A.WERKS, A.MATNR, A.LGORT, A.LIFNR, NULL AS ODM_ITEM,
+               SUM(A.UNRESTRICTED_QTY) AS Z_INV, SYSDATE AS SYS_CREATION_DATE,
+               'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY,
+               CASE
+                 WHEN A.INVENTORY_TYPE = 'SOI' THEN
+                  'LOI'
+                 ELSE
+                  A.INVENTORY_TYPE
+               END AS INVENTORY_TYPE
+          FROM PRDSPOEMTHK.Z_SNP_PCDW_ECC_INVENTORY@PRDMDMN_LK_11G A,
+               PRDSPOEMTHK.CONF_XN_HUB_MAPPING@PRDMDMN_LK_11G B
+         WHERE A.WERKS = B.PLANT
+           AND A.LGORT = B.LGORT
+           AND A.Z_WFNAME = 'THKODM'
+           AND B.LOC_NAME IS NOT NULL ----FLAG 2
+           AND SUBSTR(B.BU, 0, 4) <> 'Idea'
+         GROUP BY A.WERKS, A.MATNR, INVENTORY_TYPE, A.LGORT, A.LIFNR)
+      SELECT E.WERKS, E.MATNR, NULL AS ODM_ITEM, SUM(Z_INV) AS Z_INV,
+             'HUB_LOI' AS INV_TYPE, 'HUB_LOI' AS MEASURE, E.SYS_CREATION_DATE,
+             E.SYS_CREATED_BY, 'THINK' AS BU, NULL AS ORDERID, NULL AS LINEID,
+             E.LGORT, NULL AS GEO, NULL AS SUBGEO, NULL AS BRAND,
+             NULL AS CHANNEL, NULL AS SEGMENT, E.LIFNR AS SUPPLIERID,
+             NULL AS CUSTOMER_SEGMENT, NULL AS BIZ_UNIT, NULL AS ITEMCLASS,
+             'THKOEM_HUB' AS SOURCE
+        FROM E
+       WHERE E.INVENTORY_TYPE = 'LOI'
+       GROUP BY E.WERKS, E.MATNR, E.SYS_CREATION_DATE, E.SYS_CREATED_BY, E.LGORT,
+                E.LIFNR;
+    COMMIT;
+    -- standerlize format
+    LOGGER.INFO(V_PROC_NAME || ' Step 7');
+    UPDATE Z_MID_SUPPLY_ALL A
+       SET A.ITEM = LPAD(A.ITEM, 12, 0)
+     WHERE EXISTS
+     (SELECT 1 FROM Z_UI_SCC_SHARE B WHERE LPAD(A.ITEM, 12, 0) = B.ITEM);
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 8');
+    UPDATE Z_MID_SUPPLY_ALL A
+       SET SITEID =
+           (SELECT B.ODM_NAME
+              FROM ODM_MAPPING B
+             WHERE UPPER(A.SITEID) LIKE '%' || B.HUB_NAME || '%')
+     WHERE EXISTS (SELECT 1
+              FROM ODM_MAPPING B
+             WHERE UPPER(A.SITEID) LIKE '%' || B.HUB_NAME || '%');
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 9');
+    UPDATE Z_MID_SUPPLY_ALL A
+       SET SITEID = 'CQLaibao'
+     WHERE SITEID = 'CQlaibao'; --changed by ZR  to correct format
+    COMMIT;
+
+    --3.2  INV_IDEA
+    ---IDEA HUB LOI/SOI
+    LOGGER.INFO(V_PROC_NAME || ' Step 10');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (SITEID, ITEM, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, LGORT, SUPPLIERID, SOURCE)
+      SELECT WERKS, MATNR, NULL AS ODM_ITEM, SUM(UNRESTRICTED_QTY) AS Z_INV,
+             'HUB_LOI' AS INV_TYPE, 'HUB_LOI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'IDEA' AS BU,
+             LGORT AS LGORT, LIFNR AS SUPPLIERID, 'THKOEM_HUB' AS SOURCE
+        FROM PRDSPOEMTHK.Z_SNP_PCDW_ECC_INVENTORY@PRDMDMN_LK_11G
+       WHERE Z_WFNAME = 'THKODM'
+         AND WERKS IN ('H121', 'H111', 'H112')
+         AND LGORT NOT IN ('I070')
+         AND INVENTORY_TYPE = 'LOI'
+       GROUP BY WERKS, MATNR, LGORT, LIFNR;
+    COMMIT;
+
+    /*--step4. RDMRPDT/NB SFG SOI-- duplicate with ODM_INVENTORY then remove this logic-- added by yangnan20240930
+    logger.info(v_proc_name || ' Step 4  IH_ SOI');
+          INSERT INTO  Z_MID_SUPPLY_ALL
+       (SITEID, ITEM, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE, SYS_CREATED_BY,BU, CATEGORY, lgort,supplierid)
+        select mfgsite, item,
+              null as ODM_ITEM,
+              SUM (AVAIL_LENOVO_MP) AS Z_INV,
+               'IH_SOI' AS INV_TYPE,
+               'PN' as MEASURE,
+               SYSDATE AS sys_creation_date,
+               'PRDMRPNB.PKG_MRP_SUPPLY' as SYS_CREATED_BY,
+               'NB' AS BU,
+               ,
+                a.LGORT as lgort, a.SUPPLIERID as supplierid
+       from prdmrpnb.z_snap_mrp_inventory@PRDMDMN_19C_NEW a
+       where mfgsite in (select loc from prdmrpnb.loc@PRDMDMN_19C_NEW )
+       and mfgsite not like 'C1%'
+       and supplierid<>'X'-- SOI INV
+        and exists(select 1
+       from  prdpcdw.z_dsp_dim_component@PRDMDMN_19C_NEW  b
+       where a.item = b.component)
+       group by item, mfgsite,LGORT,supplierid
+       having SUM (AVAIL_LENOVO_MP) >0
+      union all
+             select mfgsite, item,
+              null as ODM_ITEM,
+              SUM (AVAIL_LENOVO_MP) AS Z_INV,
+               'IH_SOI' AS INV_TYPE,
+               'PN' as MEASURE,
+               SYSDATE AS sys_creation_date,
+               'PRDMRPDT.PKG_MRP_SUPPLY' as SYS_CREATED_BY,
+               'DT' as bu,
+               ,
+                a.LGORT as lgort, a.SUPPLIERID as supplierid
+       from prdmrpdt.z_snap_mrp_inventory@PRDMDMN_19C_NEW a
+       where mfgsite in (select loc from prdmrpdt.loc@PRDMDMN_19C_NEW )
+       and mfgsite not like 'C1%'
+       and supplierid <>'X'-- SOI INV
+        and exists(select 1
+       from  prdpcdw.z_dsp_dim_component@PRDMDMN_19C_NEW  b
+       where a.item = b.component)
+       group by item, mfgsite,LGORT,supplierid
+       having SUM (AVAIL_LENOVO_MP) >0;
+       commit;*/
+
+    -- NB WIP  'FRU','SMT','OPTION','MONITOR' DATA
+    LOGGER.INFO(V_PROC_NAME || ' Step 11');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (SITEID, ITEM, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS, CHANNEL,
+       SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, SOURCE)
+      SELECT MFGSITE, PRODUCT, NULL AS ODM_ITEM, SUM(ORDER_QTY) AS Z_INV,
+             'WIP' AS INV_TYPE, 'WIP' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU, GEO,
+             SUBGEO, MFG_SO_NUM AS ORDERID, MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT,
+             'MRPNB_SNAP_WIP' AS SOURCE
+        FROM Z_SNAP_MRP_WIP_NB A
+       WHERE A.ITEMCLASS IN ('FRU', 'OPTION', 'MONITOR')
+         AND MFGSITE IN (SELECT LOC FROM PRDMRPNB.LOC@PRDMDMN_19C_NEW)
+         AND MFGSITE IN
+             ('L220', 'L420', 'L215', 'T220', 'X220', 'I220', 'I021')
+       GROUP BY MFGSITE, PRODUCT, GEO, SUBGEO, MFG_SO_NUM, MFG_SO_ITEM_NUM,
+                ITEMCLASS, CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    --DT WIP  'FRU','SMT','OPTION','MONITOR' DATA
+    LOGGER.INFO(V_PROC_NAME || ' Step 12');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (SITEID, ITEM, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS, CHANNEL,
+       SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, SOURCE, FLAG
+        -- wip wangxuan 1
+       )
+      SELECT MFGSITE, PRODUCT, NULL AS ODM_ITEM, SUM(ORDER_QTY) AS Z_INV,
+             'WIP' AS INV_TYPE, 'WIP' AS MEASURE, SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU, GEO,
+             SUBGEO, MFG_SO_NUM AS ORDERID, MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT,
+             'MRPDT_SNAP_WIP' AS SOURCE, 'WIP' AS FLAG -- wip wangxuan 1
+        FROM Z_SNAP_MRP_WIP_DT A
+       WHERE A.ITEMCLASS IN ('FRU', 'SMT', 'OPTION', 'MONITOR')
+         AND MFGSITE IN ('L210',
+                         '9116',
+                         'T116',
+                         '9117',
+                         '9118',
+                         'L211',
+                         '9104',
+                         'X210',
+                         'E010',
+                         'I210',
+                         'I020')
+       GROUP BY MFGSITE, PRODUCT, GEO, SUBGEO, MFG_SO_NUM, MFG_SO_ITEM_NUM,
+                ITEMCLASS, CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --6. PRDMRPDT/NB FG--MTM SBB
+    -- Populate MTM/Option/Monitor Inventory and WIP
+    -- Only pick up in-house build product
+    -- Only pick up the ones which have corresponding Open SO -- the Inventory and WIP
+    -- without demand shows as MWD in the engine. To improve the engine performance,
+    -- we remove them.
+    -- Only pick up the non-purchasing parts.
+    -- The avaialble Inventory might be a negative value due to over-commit, however the
+    -- engine does not allow it. Thus filter out the negative values.
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 13');
+    --6.1 for 'OPTION', 'MONITOR' material
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+       BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_FG', LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+             BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT, BIZ_UNIT
+        FROM (SELECT PRODUCT, MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+                      ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_FGINV_NB
+                WHERE ITEMCLASS IN ('OPTION', 'MONITOR')
+                  AND SUPPLIERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')) A
+       WHERE EXISTS (SELECT 1
+                FROM PRDMRPNB.Z_MV_DIM_PRODUCT@PRDMDMN_19C_NEW
+               WHERE PRODUCT = A.PRODUCT)
+         AND MFGSITE IN
+             ('L220', 'L420', 'L215', 'T220', 'X220', 'I220', 'I021')
+         AND MFGSITE NOT LIKE 'C1%'
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    -- FOR DT
+    LOGGER.INFO(V_PROC_NAME || ' Step 14'); --wangxuan_1
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, FLAG
+        --FG wangxuan 1
+       )
+    --Think monitor
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, 'INV' AS FLAG --FG wangxuan 1  flag
+        FROM (SELECT PRODUCT, MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+                      ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID
+                 FROM Z_SNAP_MRP_FGINV_DT
+                WHERE ITEMCLASS IN ('OPTION', 'MONITOR')
+                  AND SUPPLIERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')) A
+       WHERE EXISTS (SELECT 1
+                FROM PRDMRPDT.Z_MV_DIM_PRODUCT@PRDMDMN_19C_NEW
+               WHERE PRODUCT = A.PRODUCT)
+         AND MFGSITE IN ('L210', 'X210', 'E010', 'I210', 'I020')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID
+      HAVING SUM(QTY) > 0
+      UNION ALL
+      --CDBN monitor
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, 'INV' AS FLAG --FG wangxuan 1  flag
+        FROM (SELECT PRODUCT, MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+                      ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID
+                 FROM Z_SNAP_MRP_FGINV_DT
+                WHERE ITEMCLASS IN ('OPTION', 'MONITOR')
+                  AND SUPPLIERID = 'X') A
+       WHERE EXISTS (SELECT 1
+                FROM PRDMRPDT.Z_MV_DIM_PRODUCT@PRDMDMN_19C_NEW
+               WHERE PRODUCT = A.PRODUCT)
+         AND MFGSITE IN (SELECT LOC FROM PRDMRPDT.LOC)
+         AND MFGSITE IN ('0116',
+                         '2116',
+                         '4116',
+                         '4118',
+                         '9116',
+                         'T116',
+                         '9117',
+                         '9118',
+                         'L211',
+                         '9104')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 15');
+    --6.2 FOR IDEANB, not consider SBB Levl netting
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, FLAG
+        --FG wangxuan 2
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPDT_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, 'FGI' AS FLAG --FG wangxuan 2
+        FROM (SELECT PRODUCT PRODUCT, A.MFGSITE, A.QTY, LGORT, ORDERID, LINEID,
+                      GEO, SUBGEO, ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID
+                 FROM Z_SNAP_MRP_FGINV_DT A
+                WHERE ITEMCLASS = 'MTM'
+                  AND ORDERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')
+                  AND A.SUPPLIERID = 'X') A
+       WHERE MFGSITE IN ('L215', 'T220', 'X220', 'I021', 'I220')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --FOR DT
+    LOGGER.INFO(V_PROC_NAME || ' Step 16');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, FLAG
+        --FG wangxuan 3
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, 'FGI' AS FLAG --FG wangxuan 3
+        FROM (SELECT PRODUCT, MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+                      ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID
+                 FROM Z_SNAP_MRP_FGINV_DT
+                WHERE ITEMCLASS = 'MTM'
+                  AND SUPPLIERID = 'X') A
+       WHERE MFGSITE IN ('9116',
+                         'T116',
+                         '9117',
+                         '9118',
+                         'L211',
+                         '9104',
+                         'X210',
+                         'I210',
+                         'I020')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    LOGGER.INFO(V_PROC_NAME || ' Step 17');
+    --6.3   ThinkNB BTS MTM, WHICH SPLIT TO SBB
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, CATEGORY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+       BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_FG' AS SOURCE, 'FG NETTING' AS CATEGORY, LGORT, ORDERID,
+             LINEID, GEO, SUBGEO, ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID,
+             CUSTOMER_SEGMENT, BIZ_UNIT
+        FROM (SELECT A.PRODUCT, A.MFGSITE, A.QTY AS QTY, LGORT, ORDERID, LINEID,
+                      GEO, SUBGEO, ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_FGINV_NB A
+                WHERE ITEMCLASS = 'MTM'
+                  AND ORDERID = 'X'
+                  AND A.SUPPLIERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')) A
+       WHERE MFGSITE IN ('L220', 'L420')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    --FOR DT  add BTS MTM, WHICH SPLIT TO SBB FOR ThinkDT
+    LOGGER.INFO(V_PROC_NAME || ' Step 18');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, CATEGORY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, FLAG
+        -- FG wangxuan 4
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_FG' AS SOURCE, 'FG NETTING' AS CATEGORY, LGORT, ORDERID,
+             LINEID, GEO, SUBGEO, ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID,
+             'FGI' AS FLAG --FG wangxuan 4
+        FROM (SELECT A.PRODUCT, A.MFGSITE, A.QTY AS QTY, LGORT, ORDERID, LINEID,
+                      GEO, SUBGEO, ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID
+                 FROM Z_SNAP_MRP_FGINV_DT A
+                WHERE ITEMCLASS = 'MTM'
+                  AND ORDERID = 'X'
+                  AND SUPPLIERID = 'X'
+                  AND A.QTY > 0
+                  AND EXISTS (SELECT 1
+                         FROM UD_CFG_INV_ATTRIBUTE_MAPPING C
+                        WHERE C.ATTRIBUTE_MP <> 'NON_CVD_FG_INV'
+                          AND C.LGORT = A.LGORT)) A
+       WHERE MFGSITE IN (SELECT LOC FROM PRDMRPDT.LOC)
+         AND MFGSITE IN ('L210', 'E010')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 19');
+    --6.4 add BTS MTM, WHICH NEED SPLIT TO SBB FOR ThinkNB but not have BOM
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+       BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+             BIZ_UNIT
+        FROM (SELECT PRODUCT PRODUCT, A.MFGSITE, A.QTY, LGORT, ORDERID, LINEID,
+                      GEO, SUBGEO, ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_FGINV_NB A
+                WHERE ITEMCLASS = 'MTM'
+                  AND ORDERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')
+                  AND A.SUPPLIERID = 'X'
+                  AND NOT EXISTS (SELECT 1
+                         FROM PRDPCDW.ECC_BOM_NEW@PRDMDMN_19C_NEW B
+                        WHERE A.PRODUCT = B.NAME
+                          AND A.MFGSITE = B.WERKS
+                          AND B.DATUV <= TRUNC(SYSDATE)
+                          AND B.DATUB >= TRUNC(SYSDATE))) A
+       WHERE MFGSITE IN ('L220', 'L420')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    -- FOR DT add BTS MTM, WHICH NEED SPLIT TO SBB FOR ThinkDT but not have BOM
+    LOGGER.INFO(V_PROC_NAME || ' Step 20');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, FLAG
+        -- FG wangxuan 5
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, 'FGI' AS FLAG -- FG wangxuan 5
+        FROM (SELECT PRODUCT PRODUCT, A.MFGSITE, A.QTY, LGORT, ORDERID, LINEID,
+                      GEO, SUBGEO, ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID
+                 FROM Z_SNAP_MRP_FGINV_DT A
+                WHERE ITEMCLASS = 'MTM'
+                  AND ORDERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')
+                  AND A.SUPPLIERID = 'X'
+                  AND NOT EXISTS
+                (SELECT 1
+                         FROM PRDPCDW.ECC_BOM_NEW@PRDMDMN_19C_NEW B
+                        WHERE A.PRODUCT = B.NAME
+                          AND A.MFGSITE = B.WERKS
+                          AND B.DATUV <= TRUNC(SYSDATE)
+                          AND B.DATUB >= TRUNC(SYSDATE)
+                          AND EXISTS (SELECT 1
+                                 FROM Z_MV_PCDW_ITEMSITEMASTER
+                                WHERE STRGR IN
+                                      (SELECT VALUE
+                                         FROM UD_CFG_MATLTYPE
+                                        WHERE PARAMETER = 'STRGR'
+                                          AND KEY_DESCRIPTION = 'SBB')
+                                  AND ITEM = B.IDNRK
+                                  AND SITEID = B.WERKS)
+                          AND EXISTS
+                        (SELECT 1
+                                 FROM UD_CFG_INV_ATTRIBUTE_MAPPING C
+                                WHERE C.ATTRIBUTE_MP <> 'NON_CVD_FG_INV'
+                                  AND C.LGORT = A.LGORT))) A
+       WHERE MFGSITE IN ('L210', 'E010')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 21');
+    --6.5  add BTO MTM, WHICH NOT NEED SPLIT TO SBB
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+       BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+             BIZ_UNIT
+        FROM (SELECT PRODUCT, MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+                      ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_FGINV_NB
+                WHERE ITEMCLASS = 'MTM'
+                  AND ORDERID <> 'X'
+                  AND SUPPLIERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')) A
+       WHERE MFGSITE IN
+             ('L220', 'L420', 'L215', 'T220', 'X220', 'I220', 'I021')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    -- FOR DT, add BTO MTM, WHICH NOT NEED SPLIT TO SBB
+    LOGGER.INFO(V_PROC_NAME || ' Step 22');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, FLAG
+        --FG wangxuan 6
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, 'FGI' AS FLAG -- FG wangxuan 6
+        FROM (SELECT PRODUCT, MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+                      ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID
+                 FROM Z_SNAP_MRP_FGINV_DT
+                WHERE ITEMCLASS = 'MTM'
+                  AND ORDERID <> 'X'
+                  AND SUPPLIERID = 'X'
+                  AND QTY > 0) A
+       WHERE MFGSITE IN ('L210', 'E010')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 23');
+    --6.6 FG which not have itemclass
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+       BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+             BIZ_UNIT
+        FROM (SELECT PRODUCT, MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+                      ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_FGINV_NB
+                WHERE ITEMCLASS IS NULL
+                  AND SUPPLIERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')) A
+       WHERE MFGSITE IN
+             ('L220', 'L420', 'L215', 'T220', 'X220', 'I220', 'I021')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    -- FOR DT which not have itemclass
+    LOGGER.INFO(V_PROC_NAME || ' Step 24');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, FLAG
+        -- FG wangxuan 7
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, 'FGI' AS FLAG --FG wangxuan 7
+        FROM (SELECT PRODUCT, MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+                      ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID
+                 FROM Z_SNAP_MRP_FGINV_DT
+                WHERE ITEMCLASS IS NULL
+                  AND SUPPLIERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')) A
+       WHERE MFGSITE IN ('L210', 'E010')
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --7. PRDMRPDT/NB FG--FG WIP
+    --7.1  WIP_OPTION_MONITOR
+    /*logger.info(v_proc_name || ' Step 25');
+    INSERT INTO Z_MID_SUPPLY_ALL
+    (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE, SYS_CREATED_BY,BU, SOURCE,
+     GEO,SUBGEO,ORDERID,LINEID,ITEMCLASS,CHANNEL,SEGMENT,CUSTOMER_SEGMENT,BIZ_UNIT)
+         SELECT product AS item,
+                mfgsite siteid,
+                null as  ODM_ITEM,
+               SUM (qty) AS Z_INV,
+               'WIP_OPTION_MONITOR' AS INV_TYPE,
+                'WIP' as MEASURE,
+                sysdate AS SYS_CREATION_DATE,
+                 '19C_SNAP_NB' AS SYS_CREATED_BY,
+                 'NB' as bu,
+                 'MRPNB_SNAP_WIP' AS SOURCE,
+                 GEO,SUBGEO,ORDERID,LINEID,ITEMCLASS,CHANNEL,SEGMENT,CUSTOMER_SEGMENT,BIZ_UNIT
+           FROM (
+                 SELECT product, mfgsite, qty,GEO,SUBGEO,MFG_SO_NUM as orderid,MFG_SO_ITEM_NUM as lineid,ITEMCLASS,CHANNEL,SEGMENT,CUSTOMER_SEGMENT,BIZ_UNIT
+                   FROM z_snap_mrp_wip_nb
+                  WHERE itemclass IN ('OPTION', 'MONITOR', 'FRU')
+                  ) a
+          WHERE mfgsite in ('L220','L420','L215','T220','X220','I220','I021')
+       GROUP BY product, mfgsite,GEO,SUBGEO,orderid, lineid,ITEMCLASS,CHANNEL,SEGMENT,CUSTOMER_SEGMENT,BIZ_UNIT
+         HAVING SUM (qty) > 0;
+    COMMIT;*/
+
+    /*    --FOR DT
+     logger.info(v_proc_name || ' Step 26');
+       INSERT INTO Z_MID_SUPPLY_ALL
+    (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE, SYS_CREATED_BY,BU, SOURCE,
+    GEO,SUBGEO,ORDERID,LINEID,ITEMCLASS,CHANNEL,SEGMENT,CUSTOMER_SEGMENT,BIZ_UNIT)
+            SELECT product AS item,
+                   mfgsite siteid,
+                  null as  ODM_ITEM,
+                  SUM (qty) AS Z_INV,
+                  'WIP' AS INV_TYPE,
+                   'WIP' as MEASURE,
+                   sysdate AS SYS_CREATION_DATE,
+                    '19C_SNAP_DT' AS SYS_CREATED_BY,
+                    'DT' as bu,
+                    'MRPDT_SNAP_WIP' AS SOURCE,
+                   GEO,SUBGEO,ORDERID,LINEID,ITEMCLASS,CHANNEL,SEGMENT,CUSTOMER_SEGMENT,BIZ_UNIT
+              FROM ( SELECT product, mfgsite, qty,GEO,SUBGEO,
+              MFG_SO_NUM as orderid,MFG_SO_ITEM_NUM as lineid,ITEMCLASS,CHANNEL,SEGMENT,CUSTOMER_SEGMENT,BIZ_UNIT
+                      FROM z_snap_mrp_wip_dt
+                     WHERE itemclass IN ('OPTION', 'MONITOR')) a
+             WHERE  mfgsite in ('L210','9116','T116','9117','9118','L211','9104','X210','E010','I210','I020')
+          GROUP BY product, mfgsite,GEO,SUBGEO,ORDERID,LINEID,ITEMCLASS,CHANNEL,SEGMENT,CUSTOMER_SEGMENT,BIZ_UNIT
+            HAVING SUM (qty) > 0;
+       COMMIT;*/
+    --7.2   FOR IDEANB, not consider SBB Levl netting
+    LOGGER.INFO(V_PROC_NAME || ' Step 27');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+        FROM (SELECT PRODUCT, MFGSITE, QTY, GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_NB
+                WHERE ITEMCLASS = 'MTM'
+                  AND MFG_SO_NUM IS NULL) A
+       WHERE MFGSITE IN ('L215', 'T220', 'X220', 'I021', 'I220')
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --FOR IDEADT, not consider SBB Levl netting
+    LOGGER.INFO(V_PROC_NAME || ' Step 28');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, FLAG
+        --wip wangxuan 2
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, 'WIP' AS FLAG --wip wangxuan 2
+        FROM (SELECT PRODUCT, MFGSITE, QTY, GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_DT
+                WHERE ITEMCLASS = 'MTM') A
+       WHERE EXISTS (SELECT 1
+                FROM PRDMRPDT.Z_MV_DIM_PRODUCT@PRDMDMN_19C_NEW
+               WHERE PRODUCT = A.PRODUCT)
+         AND MFGSITE IN ('9116',
+                         'T116',
+                         '9117',
+                         '9118',
+                         'L211',
+                         '9104',
+                         'X210',
+                         'I210',
+                         'I020')
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    --7.3  FOR ThinkNB BTS MTM, WHICH SPLIT TO SBB
+    LOGGER.INFO(V_PROC_NAME || ' Step 29');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+        FROM (SELECT A. PRODUCT, A.MFGSITE, A.QTY AS QTY, GEO, SUBGEO,
+                      MFG_SO_NUM AS ORDERID, MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS,
+                      CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_NB A
+                WHERE ITEMCLASS = 'MTM'
+                  AND MFG_SO_NUM IS NULL) A
+       WHERE MFGSITE IN ('L220', 'L420')
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --FOR DT-- BTS MTM, WHICH SPLIT TO SBB FOR ThinkDT
+    LOGGER.INFO(V_PROC_NAME || ' Step 30');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, FLAG
+        -- wip wangxuan 3
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, 'WIP' AS FLAG -- wip wangxuan 3
+        FROM (SELECT A.PRODUCT, A.MFGSITE, A.QTY AS QTY, GEO, SUBGEO,
+                      MFG_SO_NUM AS ORDERID, MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS,
+                      CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_DT A
+                WHERE ITEMCLASS = 'MTM'
+                  AND MFG_SO_NUM IS NULL
+                  AND EXISTS (SELECT 1
+                         FROM UD_CFG_INV_ATTRIBUTE_MAPPING C
+                        WHERE C.ATTRIBUTE_MP <> 'NON_CVD_FG_INV'
+                          AND C.LGORT = A.LGORT)) A
+       WHERE MFGSITE IN ('L210', 'E010')
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --7.4  FOR ThinkNB BTS  MTM, WHICH NEED SPLIT TO SBB FOR ThinkNB but not have BOM
+    LOGGER.INFO(V_PROC_NAME || ' Step 31');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+        FROM (SELECT PRODUCT PRODUCT, A.MFGSITE, A.QTY, A.PRODUCT PRODUCT_ORI,
+                      GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_NB A
+                WHERE ITEMCLASS = 'MTM'
+                  AND MFG_SO_NUM IS NULL
+                  AND NOT EXISTS (SELECT 1
+                         FROM PRDPCDW.ECC_BOM_NEW@PRDMDMN_19C_NEW B
+                        WHERE A.PRODUCT = B.NAME
+                          AND A.MFGSITE = B.WERKS
+                          AND B.DATUV <= TRUNC(SYSDATE)
+                          AND B.DATUB >= TRUNC(SYSDATE))) A
+       WHERE MFGSITE IN ('L220', 'L420')
+       GROUP BY PRODUCT, MFGSITE, PRODUCT_ORI, GEO, SUBGEO, ORDERID, LINEID,
+                ITEMCLASS, CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --FOR DT add BTS MTM, WHICH NEED SPLIT TO SBB FOR ThinkDT but not have BOM
+    LOGGER.INFO(V_PROC_NAME || ' Step 32');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, FLAG
+        -- wip wangxuan 4
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, 'WIP' AS FLAG -- wip wangxuan 4
+        FROM (SELECT PRODUCT PRODUCT, A.MFGSITE, A.QTY, A.PRODUCT PRODUCT_ORI,
+                      GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_DT A
+                WHERE ITEMCLASS = 'MTM'
+                  AND MFG_SO_NUM IS NULL
+                  AND NOT EXISTS
+                (SELECT 1
+                         FROM PRDPCDW.ECC_BOM_NEW@PRDMDMN_19C_NEW B
+                        WHERE A.PRODUCT = B.NAME
+                          AND A.MFGSITE = B.WERKS
+                          AND B.DATUV <= TRUNC(SYSDATE)
+                          AND B.DATUB >= TRUNC(SYSDATE)
+                          AND EXISTS (SELECT 1
+                                 FROM Z_MV_PCDW_ITEMSITEMASTER
+                                WHERE STRGR IN
+                                      (SELECT VALUE
+                                         FROM UD_CFG_MATLTYPE
+                                        WHERE PARAMETER = 'STRGR'
+                                          AND KEY_DESCRIPTION = 'SBB')
+                                  AND ITEM = B.IDNRK
+                                  AND SITEID = B.WERKS)
+                          AND EXISTS
+                        (SELECT 1
+                                 FROM UD_CFG_INV_ATTRIBUTE_MAPPING C
+                                WHERE C.ATTRIBUTE_MP <> 'NON_CVD_FG_INV'
+                                  AND C.LGORT = A.LGORT))) A
+       WHERE MFGSITE IN ('L210', 'E010')
+       GROUP BY PRODUCT, MFGSITE, PRODUCT_ORI, GEO, SUBGEO, ORDERID, LINEID,
+                ITEMCLASS, CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --7.5   BTO MTM, WHICH NOT NEED SPLIT TO SBB
+    LOGGER.INFO(V_PROC_NAME || ' Step 33');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+        FROM (SELECT PRODUCT, MFGSITE, QTY, GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_NB
+                WHERE ITEMCLASS = 'MTM'
+                  AND MFG_SO_NUM IS NOT NULL) A
+       WHERE MFGSITE IN
+             ('L220', 'L420', 'L215', 'T220', 'X220', 'I021', 'I220')
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    -- FOR DT add BTO MTM, WHICH NOT NEED SPLIT TO SBB
+    LOGGER.INFO(V_PROC_NAME || ' Step 34');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, FLAG
+        -- wip wangxuan 5
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, 'WIP' AS FLAG -- wip wangxuan 5
+        FROM (SELECT PRODUCT, MFGSITE, QTY, GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_DT
+                WHERE ITEMCLASS = 'MTM'
+                  AND MFG_SO_NUM IS NOT NULL) A
+       WHERE MFGSITE IN ('L210', 'E010')
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --7.6  which not have itemclass
+    LOGGER.INFO(V_PROC_NAME || ' Step 35');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+        FROM (SELECT PRODUCT, MFGSITE, QTY, GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_NB
+                WHERE ITEMCLASS IS NULL) A
+       WHERE MFGSITE IN
+             ('L220', 'L420', 'L215', 'T220', 'X220', 'I021', 'I220')
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    -- FOR DT which not have itemclass
+    LOGGER.INFO(V_PROC_NAME || ' Step 36');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, FLAG
+        -- wip wangxuan 6
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, 'WIP' AS FLAG -- wip wangxuan 6
+        FROM (SELECT PRODUCT, MFGSITE, QTY, GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_DT
+                WHERE ITEMCLASS IS NULL) A
+       WHERE MFGSITE IN (SELECT LOC FROM PRDMRPDT.LOC)
+         AND MFGSITE IN ('L210', 'E010')
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+
+    --7.7  T220 SMT SFG MO WIP
+    LOGGER.INFO(V_PROC_NAME || ' Step 37');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'SFG' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+        FROM (SELECT PRODUCT, MFGSITE, QTY, GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_NB) M
+       WHERE MFGSITE = 'T220'
+         AND EXISTS
+       (SELECT 1
+                FROM PRDPCDW.ECC_MARA@PRDMDMN_19C_NEW N
+               WHERE M.PRODUCT = N.MATNR
+                 AND N.ZEINR IN ('BDPLANAR', 'CARDPOP', 'BS_GBM')) --20230629 add bs_gbm
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    --8. PRDMRPDT/NB FG--CTO parts
+    --  Populate CTO Inventory and WIP
+    -- Only pick up the ones which have corresponding Open SO -- the Inventory and WIP
+    -- without demand shows as MWD in the engine. To improve the engine performance,
+    -- we remove them.
+    -- The avaialble Inventory might be a negative value due to over-commit, however the
+    -- engine does not allow it. Thus filter out the negative values.
+    --8.1  FGI_CTO
+    LOGGER.INFO(V_PROC_NAME || ' Step 38');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+       BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+             BIZ_UNIT
+        FROM (SELECT ORDERID || '_' || LINEID || '_' || PRODUCT AS PRODUCT,
+                      MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                      BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT,
+                      BIZ_UNIT
+                 FROM Z_SNAP_MRP_FGINV_NB A
+                WHERE ITEMCLASS = 'CTO'
+                  AND SUPPLIERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')
+                  AND EXISTS
+                (SELECT 1
+                         FROM Z_SNAP_MRP_OPENSO_NB
+                        WHERE ITEMCLASS = 'CTO'
+                          AND ORDERID = A.ORDERID
+                          AND LINEID = A.LINEID
+                          AND PRODUCT = A.PRODUCT
+                          AND MFGSITE = A.MFGSITE)
+                  AND MFGSITE IN
+                      ('L220', 'L420', 'L215', 'T220', 'X220', 'I021', 'I220'))
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    -- FOR DT
+    LOGGER.INFO(V_PROC_NAME || ' Step 39');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+       ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, FLAG
+        -- FG wangxuan 8
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'FGI' AS INV_TYPE, 'FGI' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_FG' AS SOURCE, LGORT, ORDERID, LINEID, GEO, SUBGEO,
+             ITEMCLASS, BRAND, CHANNEL, SEGMENT, SUPPLIERID, 'FGI_CTO' AS FLAG -- FG wangxuan 8
+        FROM (SELECT ORDERID || '_' || LINEID || '_' || PRODUCT AS PRODUCT,
+                      MFGSITE, QTY, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                      BRAND, CHANNEL, SEGMENT, SUPPLIERID
+                 FROM Z_SNAP_MRP_FGINV_DT A
+                WHERE ITEMCLASS = 'CTO'
+                  AND SUPPLIERID = 'X'
+                  AND LGORT NOT IN (SELECT LGORT
+                                      FROM UD_CFG_INV_ATTRIBUTE_MAPPING
+                                     WHERE TYPE = 'FG_GEO')
+                  AND QTY > 0
+                  AND EXISTS (SELECT 1
+                         FROM Z_SNAP_MRP_OPENSO_DT
+                        WHERE ITEMCLASS = 'CTO'
+                          AND ORDERID = A.ORDERID
+                          AND LINEID = A.LINEID
+                          AND PRODUCT = A.PRODUCT
+                          AND MFGSITE = A.MFGSITE)
+                  AND MFGSITE IN ('L210',
+                                  '9116',
+                                  'T116',
+                                  '9117',
+                                  '9118',
+                                  'L211',
+                                  '9104',
+                                  'X210',
+                                  'E010',
+                                  'I210',
+                                  'I020'))
+       GROUP BY PRODUCT, MFGSITE, LGORT, ORDERID, LINEID, GEO, SUBGEO, ITEMCLASS,
+                BRAND, CHANNEL, SEGMENT, SUPPLIERID
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    --8.2  WIP_CTO
+    LOGGER.INFO(V_PROC_NAME || ' Step 40');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, CATEGORY, GEO, SUBGEO, ORDERID, LINEID,
+       ITEMCLASS, CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT)
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'NB' AS BU,
+             'MRPNB_SNAP_WIP' AS SOURCE, 'FG NETTING' AS CATEGORY, GEO, SUBGEO,
+             ORDERID, LINEID, ITEMCLASS, CHANNEL, SEGMENT, CUSTOMER_SEGMENT,
+             BIZ_UNIT
+        FROM (SELECT MFG_SO_NUM || '_' || MFG_SO_ITEM_NUM || '_' || PRODUCT AS PRODUCT,
+                      MFGSITE, QTY, GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_NB A
+                WHERE ITEMCLASS = 'CTO'
+                  AND EXISTS
+                (SELECT 1
+                         FROM Z_SNAP_MRP_OPENSO_NB
+                        WHERE ITEMCLASS = 'CTO'
+                          AND ORDERID = A.MFG_SO_NUM
+                          AND LINEID = A.MFG_SO_ITEM_NUM
+                          AND PRODUCT = A.PRODUCT
+                          AND MFGSITE = A.MFGSITE)
+                  AND MFGSITE IN
+                      ('L220', 'L420', 'L215', 'T220', 'X220', 'I021', 'I220'))
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    -- FOR DT  WIP
+    LOGGER.INFO(V_PROC_NAME || ' Step 41');
+    INSERT INTO Z_MID_SUPPLY_ALL
+      (ITEM, SITEID, ODM_ITEM, Z_INV, INV_TYPE, MEASURE, SYS_CREATION_DATE,
+       SYS_CREATED_BY, BU, SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+       CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, FLAG
+        --wip wangxuan 7
+       )
+      SELECT PRODUCT AS ITEM, MFGSITE SITEID, NULL AS ODM_ITEM,
+             SUM(QTY) AS Z_INV, 'WIP' AS INV_TYPE, 'WIP' AS MEASURE,
+             SYSDATE AS SYS_CREATION_DATE,
+             'PRDMRPBS.PKG_PCDW_TO_MRP' AS SYS_CREATED_BY, 'DT' AS BU,
+             'MRPDT_SNAP_WIP' AS SOURCE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+             CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT, 'WIP_CTO' AS FLAG --wip wangxuan 7
+        FROM (SELECT MFG_SO_NUM || '_' || MFG_SO_ITEM_NUM || '_' || PRODUCT AS PRODUCT,
+                      MFGSITE, QTY,
+
+                      GEO, SUBGEO, MFG_SO_NUM AS ORDERID,
+                      MFG_SO_ITEM_NUM AS LINEID, ITEMCLASS, CHANNEL, SEGMENT,
+                      CUSTOMER_SEGMENT, BIZ_UNIT
+                 FROM Z_SNAP_MRP_WIP_DT A
+                WHERE ITEMCLASS = 'CTO'
+                  AND EXISTS (SELECT 1
+                         FROM Z_SNAP_MRP_OPENSO_DT
+                        WHERE ITEMCLASS = 'CTO'
+                          AND ORDERID = A.MFG_SO_NUM
+                          AND LINEID = A.MFG_SO_ITEM_NUM
+                          AND PRODUCT = A.PRODUCT
+                          AND MFGSITE = A.MFGSITE)
+                  AND MFGSITE IN ('L210',
+                                  '9116',
+                                  'T116',
+                                  '9117',
+                                  '9118',
+                                  'L211',
+                                  '9104',
+                                  'X210',
+                                  'E010',
+                                  'I210',
+                                  'I020')) -- added by wanggang38 for MEX X210 migration 20231205
+       GROUP BY PRODUCT, MFGSITE, GEO, SUBGEO, ORDERID, LINEID, ITEMCLASS,
+                CHANNEL, SEGMENT, CUSTOMER_SEGMENT, BIZ_UNIT
+      HAVING SUM(QTY) > 0;
+    COMMIT;
+    --- NEED Z_MRP_INV_TYPE UPDATE INV_TYPE_DETIAL INFO;
+    LOGGER.INFO(V_PROC_NAME || ' Step 42');
+    /*     update Z_MID_SUPPLY_ALL A
+    set INV_TYPE_DETAIL =   INV_TYPE
+    WHERE  (SOURCE like 'MRP%' OR SOURCE  LIKE 'THKOEM%');
+    COMMIT;
+
+     logger.info(v_proc_name || ' Step 43');
+      UPDATE ( select * from Z_MID_SUPPLY_ALL where (SOURCE LIKE 'MRP%' OR SOURCE LIKE 'THKOEM%'))  A
+      SET CATEGORY = (SELECT CATEGORY FROM Z_MRP_INV_TYPE B WHERE (DATA_SOURCE LIKE 'MRP%' OR DATA_SOURCE LIKE 'THKOEM%')
+      AND a.inv_type = b.inv_type
+      and a.source = b.DATA_SOURCE);
+      commit;*/
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 43');
+    -- update itemclass info and INV_TYPE_DETAIL info
+    --1) SBB
+    UPDATE Z_MID_SUPPLY_ALL A SET A.ITEMCLASS = 'SBB' WHERE ITEM LIKE 'SBB%';
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 44');
+    --2) for MTM & CTO
+    MERGE INTO Z_MID_SUPPLY_ALL A
+    USING (SELECT PRODUCT, ITEMCLASS
+             FROM PRDPCDW.Z_DSP_DIM_PRODUCT@PRDMDMN_19C_NEW) B
+    ON (A.ITEM = B.PRODUCT)
+    WHEN MATCHED THEN
+      UPDATE SET A.ITEMCLASS = B.ITEMCLASS;
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 45');
+    --3) for SFG
+    MERGE INTO Z_MID_SUPPLY_ALL A
+    USING (SELECT *
+             FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW C
+            WHERE HIER5_CODE IN (SELECT PVALUE
+                                   FROM Z_UI_CONF_PARAMETER
+                                  WHERE PDOMAIN = 'OEM_PART'
+                                    AND PNAME = 'BASIC_NAME')) B
+    ON (A.ITEM = B.COMPONENT)
+    WHEN MATCHED THEN
+      UPDATE SET A.ITEMCLASS = 'SFG';
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' Step 46');
+    ---4) other default PN
+    UPDATE Z_MID_SUPPLY_ALL A SET A.ITEMCLASS = 'PN' WHERE ITEMCLASS IS NULL;
+    COMMIT;
+    -- update  INV_TYPE_DETAIL  and ESP-CATEGORY info
+    LOGGER.INFO(V_PROC_NAME || ' Step 47');
+    MERGE INTO Z_MID_SUPPLY_ALL A
+    USING (SELECT INV_TYPE, INV_TYPE_DETAIL, CATEGORY, ITEMCLASS, DATA_SOURCE
+             FROM Z_MRP_INV_TYPE
+            WHERE INV_TYPE <> 'OOI'
+            GROUP BY INV_TYPE, INV_TYPE_DETAIL, CATEGORY, ITEMCLASS, DATA_SOURCE) B
+    ON (A.INV_TYPE = B.INV_TYPE AND A.ITEMCLASS = B.ITEMCLASS AND A.SOURCE = B.DATA_SOURCE)
+    WHEN MATCHED THEN
+      UPDATE
+         SET A.INV_TYPE_DETAIL = B.INV_TYPE_DETAIL,
+             A.CATEGORY        = B.CATEGORY
+       WHERE (A.SOURCE LIKE 'MRP%' OR SOURCE LIKE 'THKOEM%');
+    COMMIT;
+
+    LOGGER.INFO(V_PROC_NAME || ' End');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+
+      LOGGER.ERROR;
+  END;
+
+  PROCEDURE PRC_ODM_SFG_SHIPMEN(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || '.PRC_ODM_SFG_SHIPMEN';
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    PKG_BASE_FUNCS.INIT_LOG_RUN(G_LOGIC_NAME || ':' || IV_ID);
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    EXECUTE IMMEDIATE 'truncate table z_pcdw_odm_sfg_shipment';
+
+    INSERT INTO Z_PCDW_ODM_SFG_SHIPMENT
+      (ODM, ODMPN, LENOVOPN, SHIP_QTY, SHIP_DATE, SHIP_TO, ODM_CREATE_DATE,
+       SYS_CREATED_BY, SYS_CREATED_DATE)
+      SELECT DECODE(UPPER(ODM), 'FOXCONNL6', 'FOXCONN', ODM), ODMPN,
+             NVL(LENOVOPN, ODMPN), SUM(SHIP_QTY), SHIP_DATE, SHIP_TO,
+             MAX(ODM_CREATE_DATE) AS ODM_CREATE_DATE, G_LOGIC_NAME, SYSDATE
+        FROM PRDPCDW.IMP_ODM_SFG_SHIPMENT@PRDMDMN_LK_11G A
+       WHERE LENGTH(NVL(LENOVOPN, ODMPN)) <= 30 -- yangnan13 2024/10/18
+         AND EXISTS (SELECT 1
+                FROM (SELECT DISTINCT ASN_SOURCE, PVALUE
+                         FROM Z_UI_CONF_PARAMETER
+                        WHERE PDOMAIN = 'ODM_CODE') C
+               WHERE A.ODM = C.PVALUE
+                 AND C. ASN_SOURCE = 'FTP') --  yangnan13 20240725 only filter no ASN source 20240725
+       GROUP BY DECODE(UPPER(ODM), 'FOXCONNL6', 'FOXCONN', ODM), ODMPN,
+                NVL(LENOVOPN, ODMPN), SHIP_DATE, SHIP_TO;
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || ' Step1');
+
+    /*   --update quanta
+    update z_pcdw_odm_sfg_shipment a
+    set ship_to = 'SH_NB'
+    where odm = 'QUANTA' and lower(func_odmpn_format(ship_to) ) = 'shanghai';
+    --annotate obselete odm quanta logic -- added by yangnan13 20240725*/
+
+    COMMIT;
+    --update liteon
+    LOGGER.INFO(L_PROC_NAME || ' Step2');
+    UPDATE Z_PCDW_ODM_SFG_SHIPMENT A
+       SET SHIP_TO =
+           (SELECT MAX(B.SHIP_TO)
+              FROM (SELECT DISTINCT PATTRIBUTE AS SHIP_TO
+                       FROM Z_UI_CONF_PARAMETER
+                      WHERE PDOMAIN = 'INTRANSIT'
+                        AND PNAME = 'DESTINATION') B
+             WHERE INSTR(FUNC_ODMPN_FORMAT(A.SHIP_TO), B.SHIP_TO) > 0)
+     WHERE ODM = 'LITEON'
+       AND EXISTS
+     (SELECT 1
+              FROM (SELECT DISTINCT PATTRIBUTE AS SHIP_TO
+                       FROM Z_UI_CONF_PARAMETER
+                      WHERE PDOMAIN = 'INTRANSIT'
+                        AND PNAME = 'DESTINATION') B
+             WHERE INSTR(FUNC_ODMPN_FORMAT(A.SHIP_TO), B.SHIP_TO) > 0);
+
+    COMMIT;
+
+    LOGGER.INFO(L_PROC_NAME || 'END');
+
+    UPDATE Z_PCDW_ODM_SFG_SHIPMENT A
+       SET SHIP_TO = 'FLEX_DT'
+     WHERE ODM = 'LITEON'
+       AND UPPER(FUNC_ODMPN_FORMAT(SHIP_TO)) LIKE 'FLEX%';
+
+    COMMIT;
+    --foxconn need update, but cannot split nb/dt
+
+    ---sfg gr net change
+    PKG_SUPPLY_PROCESS.PRC_ODM_SFG_INTRANSIT_GR(WFL_ID,
+                                                NODE_ID,
+                                                IV_ID,
+                                                EXITCODE);
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+  PROCEDURE PRC_ODM_WIP(WFL_ID   VARCHAR2,
+                        NODE_ID  VARCHAR2,
+                        IV_ID    VARCHAR2,
+                        EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || '.PRC_ODM_WIP';
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    PKG_BASE_FUNCS.INIT_LOG_RUN(G_LOGIC_NAME || ':' || IV_ID);
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    -- as SCC has no wip data?? below logic only reserved for FTP data
+
+    EXECUTE IMMEDIATE 'truncate table z_pcdw_odm_wip';
+
+    INSERT INTO Z_PCDW_ODM_WIP
+      (ODM, LENOVOPN, ODMPN, WIP_QTY, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE, BU)
+      SELECT DECODE(UPPER(ODM), 'FOXCONNL6', 'FOXCONN', ODM), LENOVOPN, ODMPN,
+             WIP_QTY, ODM_CREATED_DATE, G_LOGIC_NAME, SYSDATE,
+             REPLACE(BU, CHR(13), '') --DECODE(upper(odm),'3NOD',PO,'')
+        FROM PRDPCDW.IMP_ODM_WIP@PRDMDMN_LK_11G A
+       WHERE EXISTS (SELECT 1
+                FROM (SELECT DISTINCT INV_SOURCE, PVALUE
+                         FROM Z_UI_CONF_PARAMETER
+                        WHERE PDOMAIN = 'ODM_CODE') C
+               WHERE A.ODM = C.PVALUE
+                 AND C. INV_SOURCE = 'FTP'); --- added by yangnan13 for BSMRP upgrading 20240729
+    COMMIT;
+
+    UPDATE Z_PCDW_ODM_WIP A
+       SET LENOVOPN = SUBSTR(A.ODMPN, 0, 7)
+     WHERE A.ODM IN ('WISTRON', 'WISTRON ZS','WISTRON_VN_NB')--cuigq4 25.2.24 vn
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW B
+             WHERE SUBSTR(A.ODMPN, 0, 7) = B.COMPONENT)
+       AND NOT EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW C
+             WHERE A.LENOVOPN = C.COMPONENT);
+
+    COMMIT;
+
+    UPDATE Z_PCDW_ODM_WIP A
+       SET LENOVOPN = SUBSTR(A.ODMPN, 0, 10)
+     WHERE A.ODM IN ('WISTRON', 'WISTRON ZS','WISTRON_VN_NB')--cuigq4 25.2.24 vn
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW B
+             WHERE SUBSTR(A.ODMPN, 0, 10) = B.COMPONENT)
+       AND NOT EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW C
+             WHERE A.LENOVOPN = C.COMPONENT);
+
+    COMMIT;
+
+    IF TO_NUMBER(TO_CHAR(SYSDATE, 'D', 'NLS_DATE_LANGUAGE = American')) = 5 /*v_snapdate*/
+     THEN
+      EXECUTE IMMEDIATE 'ALTER TABLE Z_PCDW_ODM_WIP_HIS TRUNCATE SUBPARTITION P_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'YYYY') || '_W_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'WW');
+
+      INSERT INTO Z_PCDW_ODM_WIP_HIS
+        (VERSIONYEAR, VERSIONWEEK, VERSIONDATE, ODM, LENOVOPN, ODMPN, WIP_QTY,
+         ODM_CREATED_DATE, SYS_CREATED_BY, SYS_CREATED_DATE, BU)
+        SELECT TRUNC(V_CURRENTWEEK, 'yyyy'), TO_CHAR(V_CURRENTWEEK, 'ww'),
+               V_CURRENTWEEK, ODM, PKG_BASE_FUNCS.GET_MATNR_INPUT(LENOVOPN),
+               PKG_BASE_FUNCS.GET_MATNR_INPUT(ODMPN), WIP_QTY, ODM_CREATED_DATE,
+               SYS_CREATED_BY, SYS_CREATED_DATE, BU
+          FROM Z_PCDW_ODM_WIP;
+
+      COMMIT;
+
+      --- update bu for Quanta/Wistron, item souce to one BU; item mapping to multiple BU will source to idea
+      MERGE INTO Z_PCDW_ODM_WIP_HIS T1
+      USING (SELECT ITEM, SITEID, COUNT(1) CNT, MAX(BU) BU,
+                    DECODE(COUNT(1), 1, MAX(BU), 'IdeaNB') AS BU_F
+               FROM (SELECT DISTINCT COMP ITEM, WERKS SITEID, BU
+                        FROM Z_MID_MAT_UTIL_COMP_BU_FAMILY
+                       WHERE WERKS IN ('WISTRON', 'QUANTA'))
+              GROUP BY ITEM, SITEID) T2
+      ON (T1.LENOVOPN = T2.ITEM AND T1.ODM = T2.SITEID)
+      WHEN MATCHED THEN
+        UPDATE SET T1.BU = T2.BU_F WHERE T1.VERSIONDATE = V_CURRENTWEEK;
+
+      COMMIT;
+
+      --DETERMINE bu for Quanta/WISTRON MTM
+      UPDATE Z_PCDW_ODM_WIP_HIS A
+         SET BU =
+             (SELECT HIER6_CODE
+                FROM PRDPCDW.Z_DSP_DIM_PRODUCT@PRDMDMN_19C_NEW B
+               WHERE A.LENOVOPN = B.PRODUCT)
+       WHERE EXISTS (SELECT 1
+                FROM PRDPCDW.Z_DSP_DIM_PRODUCT@PRDMDMN_19C_NEW C
+               WHERE A.LENOVOPN = C.PRODUCT)
+         AND ODM IN ('WISTRON', 'QUANTA')
+         AND VERSIONDATE = V_CURRENTWEEK;
+
+      COMMIT;
+
+    END IF;
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+  PROCEDURE PRC_ODM_MO_RESERVAT(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || '.PRC_ODM_MO_RESERVAT';
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    PKG_BASE_FUNCS.INIT_LOG_RUN(G_LOGIC_NAME || ':' || IV_ID);
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    EXECUTE IMMEDIATE 'truncate table z_pcdw_odm_mo_reservation';
+
+    INSERT INTO Z_PCDW_ODM_MO_RESERVATION
+      (ODM, ODM_ITEM, LENOVO_ITEM, RES_QTY, RES_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE, BU)
+      SELECT DECODE(UPPER(ODM), 'FOXCONNL6', 'FOXCONN', ODM), ODM_ITEM,
+             CASE
+               WHEN TRIM(LENOVO_ITEM) IS NULL THEN
+                ODM_ITEM
+               ELSE
+                PKG_BASE_FUNCS.GET_MATNR_INPUT(REPLACE(LENOVO_ITEM, '-', ''))
+             END AS LENOVO_ITEM, RES_QTY, RES_DATE, G_LOGIC_NAME, SYSDATE, ''
+        FROM PRDPCDW.IMP_ODM_MO_RESERVATION@PRDMDMN_LK_11G A
+       WHERE EXISTS (SELECT 1
+                FROM (SELECT DISTINCT INV_SOURCE, PVALUE -- added by yangnan13 for only keep FTP data
+                         FROM Z_UI_CONF_PARAMETER
+                        WHERE PDOMAIN = 'ODM_CODE') C
+               WHERE A.ODM = C.PVALUE
+                 AND C. INV_SOURCE = 'FTP')
+         AND ODM NOT IN ('LITEON', 'FOXCONNL6'); --Modify by hanz7 20220616 Old value: ODM<>'LITEON'
+
+    INSERT INTO Z_PCDW_ODM_MO_RESERVATION
+      (ODM, ODM_ITEM, LENOVO_ITEM, RES_QTY, RES_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE, BU)
+      SELECT DECODE(UPPER(ODM), 'FOXCONNL6', 'FOXCONN', ODM), ODM_ITEM,
+             CASE
+               WHEN TRIM(LENOVO_ITEM) IS NULL THEN
+                ODM_ITEM
+               ELSE
+                PKG_BASE_FUNCS.GET_MATNR_INPUT(REPLACE(LENOVO_ITEM, '-', ''))
+             END AS LENOVO_ITEM, RES_QTY, RES_DATE, G_LOGIC_NAME, SYSDATE,
+             -- decode(REPLACE(REPLACE(bu, CHR(10)), CHR(13)),'TBG','ThinkDT','LBG','IdeaDT',bu)
+             DECODE(REPLACE(REPLACE(BU, CHR(13), ''), CHR(10), ''),
+                     'TBG',
+                     'ThinkDT',
+                     'LBG',
+                     'IdeaDT',
+                     REPLACE(REPLACE(BU, CHR(13), ''), CHR(10), '')) --add wanggang38 2023-7-7
+        FROM PRDPCDW.IMP_ODM_MO_RESERVATION@PRDMDMN_LK_11G A
+       WHERE EXISTS (SELECT 1
+                FROM (SELECT DISTINCT INV_SOURCE, PVALUE -- added by yangnan13 for only keep FTP data
+                         FROM Z_UI_CONF_PARAMETER
+                        WHERE PDOMAIN = 'ODM_CODE') C
+               WHERE A.ODM = C.PVALUE
+                 AND C. INV_SOURCE = 'FTP')
+         AND ODM IN ('LITEON', 'FOXCONNL6'); --Modify by hanzx7 20220616  Old value: ODM='LITEON'
+    COMMIT;
+
+    UPDATE Z_PCDW_ODM_MO_RESERVATION A
+       SET LENOVO_ITEM = SUBSTR(A.ODM_ITEM, 0, 7)
+     WHERE A.ODM IN ('WISTRON', 'WISTRON ZS')
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW B
+             WHERE SUBSTR(A.ODM_ITEM, 0, 7) = B.COMPONENT)
+       AND NOT EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW C
+             WHERE A.LENOVO_ITEM = C.COMPONENT);
+    COMMIT;
+
+    UPDATE Z_PCDW_ODM_MO_RESERVATION A
+       SET LENOVO_ITEM = SUBSTR(A.ODM_ITEM, 0, 10)
+     WHERE A.ODM IN ('WISTRON', 'WISTRON ZS')
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW B
+             WHERE SUBSTR(A.ODM_ITEM, 0, 10) = B.COMPONENT)
+       AND NOT EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW C
+             WHERE A.LENOVO_ITEM = C.COMPONENT);
+    COMMIT;
+
+    MERGE INTO Z_PCDW_ODM_MO_RESERVATION A
+    USING PRDPCDW.Z_DSP_DIM_PRODUCT@PRDMDMN_19C_NEW B
+    ON (A.LENOVO_ITEM = B.PRODUCT)
+    WHEN MATCHED THEN
+      UPDATE SET BU = B.HIER6_CODE;
+
+    COMMIT;
+
+    IF TO_NUMBER(TO_CHAR(SYSDATE, 'D', 'NLS_DATE_LANGUAGE = American')) = 5 /* v_snapdate*/
+     THEN
+      EXECUTE IMMEDIATE 'ALTER TABLE Z_PCDW_ODM_MO_RESERVATION_HIS TRUNCATE SUBPARTITION P_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'YYYY') || '_W_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'WW');
+
+      INSERT INTO Z_PCDW_ODM_MO_RESERVATION_HIS
+        (VERSIONYEAR, VERSIONWEEK, VERSIONDATE, ODM, ODM_ITEM, LENOVO_ITEM,
+         RES_QTY, RES_DATE, SYS_CREATED_BY, SYS_CREATED_DATE, BU)
+        SELECT TRUNC(V_CURRENTWEEK, 'yyyy'), TO_CHAR(V_CURRENTWEEK, 'ww'),
+               V_CURRENTWEEK, ODM, ODM_ITEM, LENOVO_ITEM, RES_QTY, RES_DATE,
+               SYS_CREATED_BY, SYS_CREATED_DATE, BU
+          FROM Z_PCDW_ODM_MO_RESERVATION;
+
+      COMMIT;
+
+      --- add match_code BU logic for Wistron and Quanta by zhaibo 20180115
+      ---bu for WISTRON COMP, eg lenovo item is ***AA, or 0000+ odm item
+      UPDATE Z_PCDW_ODM_MO_RESERVATION_HIS
+         SET BU = 'ThinkNB'
+       WHERE VERSIONDATE = V_CURRENTWEEK
+         AND ODM = 'WISTRON'
+         AND PKG_BASE_FUNCS.GET_MATNR_INPUT(ODM_ITEM) <>
+             PKG_BASE_FUNCS.GET_MATNR_INPUT(LENOVO_ITEM)
+         AND LENOVO_ITEM IS NOT NULL;
+
+      COMMIT;
+
+      --- bu for WISTRON COMP
+      UPDATE Z_PCDW_ODM_MO_RESERVATION_HIS A
+         SET BU = 'IdeaNB'
+       WHERE ODM = 'WISTRON'
+         AND VERSIONDATE = V_CURRENTWEEK
+         AND PKG_BASE_FUNCS.GET_MATNR_INPUT(ODM_ITEM) =
+             PKG_BASE_FUNCS.GET_MATNR_INPUT(LENOVO_ITEM)
+         AND EXISTS (SELECT 1
+                FROM PRDSPOEMTHK.Z_DIM_COMPONENT@PRDMDMN_LK_11G B
+               WHERE A.LENOVO_ITEM = B.COMPONENT); --add filter to filter out odm sfg part number 20180131
+
+      COMMIT;
+
+      ---bu for Wistron SFG
+      UPDATE Z_PCDW_ODM_MO_RESERVATION_HIS A
+         SET BU =
+             (SELECT BU
+                FROM Z_MID_MAT_UTIL_COMP_BU_FAMILY B
+               WHERE A.ODM_ITEM = B.COMP
+                 AND A.ODM = B.WERKS
+                 AND ROWNUM = 1)
+       WHERE EXISTS (SELECT 1
+                FROM Z_MID_MAT_UTIL_COMP_BU_FAMILY C
+               WHERE A.ODM_ITEM = C.COMP
+                 AND A.ODM = C.WERKS)
+         AND ODM = 'WISTRON'
+         AND VERSIONDATE = V_CURRENTWEEK
+            --AND LENOVO_ITEM IS NULL  ---lenovo item will be same with odm item for sfg product, comments on 20180131
+         AND BU IS NULL;
+
+      COMMIT;
+
+      --- update bu for Quanta, item souce to one BU; item mapping to multiple BU will source to think
+      MERGE INTO Z_PCDW_ODM_MO_RESERVATION_HIS T1
+      USING (SELECT ITEM, SITEID, COUNT(1) CNT, MAX(BU) BU,
+                    DECODE(COUNT(1), 1, MAX(BU), 'IdeaNB') AS BU_F
+               FROM (SELECT DISTINCT COMP ITEM, WERKS SITEID, BU
+                        FROM Z_MID_MAT_UTIL_COMP_BU_FAMILY
+                       WHERE WERKS = 'QUANTA')
+              GROUP BY ITEM, SITEID) T2
+      ON (T1.LENOVO_ITEM = T2.ITEM AND T1.ODM = T2.SITEID)
+      WHEN MATCHED THEN
+        UPDATE SET T1.BU = T2.BU_F WHERE T1. VERSIONDATE = V_CURRENTWEEK;
+
+      COMMIT;
+      --end change by zhaibo
+
+    END IF;
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+  PROCEDURE PRC_ODM_SOURCE(WFL_ID   VARCHAR2,
+                           NODE_ID  VARCHAR2,
+                           IV_ID    VARCHAR2,
+                           EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || '.PRC_ODM_SOURCE';
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    PKG_BASE_FUNCS.INIT_LOG_RUN(G_LOGIC_NAME || ':' || IV_ID);
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+    EXECUTE IMMEDIATE 'truncate table Z_PCDW_ODM_SOURCE';
+    -- below procedure record odm bom relationship using bod, as scc no this link line ,so keep all  ;-- added by yangnan13 20240725
+    /*DELETE FROM Z_PCDW_ODM_SOURCE A
+     WHERE EXISTS (SELECT 1
+              FROM PRDPCDW.IMP_ODM_SOURCE@PRDMDMN_LK_11G B
+             WHERE A.ODM = B.ODM);
+    COMMIT;*/
+
+    INSERT INTO Z_PCDW_ODM_SOURCE
+      (ODM, ODMPN, LENOVOPN, FROM_ODM, TO_ODM, ODM_CREATED_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE, SBB)
+      SELECT UPPER(ODM), ODMPN, LENOVOPN, UPPER(FROM_ODM),
+             DECODE(UPPER(TO_ODM), 'WISTRONZS', 'WISTRON ZS', UPPER(TO_ODM)),
+             ODM_CREATED_DATE, G_LOGIC_NAME, SYSDATE, SBB
+        FROM PRDPCDW.IMP_ODM_SOURCE@TSTMDMN_LK S
+       WHERE EXISTS
+       (SELECT 1 FROM LOC M WHERE UPPER(S.FROM_ODM) = UPPER(M.LOC));
+    COMMIT;
+ 
+--begin cuigq4 25.2.24 vn
+    DELETE FROM z_pcdw_odm_source  where  upper(FROM_ODM)
+    in ('WISTRON_VN_NB','LCFC_VN','COMPAL_VN','HUAQIN_VN') ;
+    commit;
+
+      INSERT INTO z_pcdw_odm_source
+        (odm,
+         odmpn,
+         lenovopn,
+         from_odm,
+         to_odm,
+         odm_created_date,
+         sys_created_by,
+         sys_created_date,
+         SBB)
+        select ODM,
+               ODMPN,
+               LENOVOPN,
+               FROM_ODM,
+               TO_ODM,
+               ODM_CREATED_DATE,
+               G_LOGIC_NAME,
+               SYSDATE,
+               SBB
+          from (SELECT UPPER(ODM) ODM,
+                       ODM_PN odmpn,
+                       LENOVO_PN LENOVOPN,
+                       upper(FROM_ODM) from_odm,
+                       upper(TO_ODM) TO_ODM,
+                       ODM_CREATED_DATE,
+                       SBB,
+                       row_number() over(partition by ODM, ODM_PN, LENOVO_PN, FROM_ODM, TO_ODM, ODM_CREATED_DATE, SBB order by ODM, ODM_PN, LENOVO_PN, FROM_ODM, TO_ODM, ODM_CREATED_DATE, SBB, VERSION desc) rn
+                  FROM I_SCC_INTEGRATION.odm_imp_source@prd_csen s
+                  where exists (select 1 from (select ODM,max(VERSION) version from  I_SCC_INTEGRATION.odm_imp_source@prd_csen group by ODM) b
+                            where s.version=b.version and s.ODM=b.ODM)
+                   and exists
+                 (select 1
+                          from mst_sitemaster m
+                         where upper(s.from_odm) = upper(m.siteid))
+                   AND upper(FROM_ODM) in ('WISTRON_VN_NB',
+                                           'LCFC_VN',
+                                           'COMPAL_VN',
+                                           'HUAQIN_VN'
+                                           ))
+         where rn = 1;
+    COMMIT;
+    
+   update z_pcdw_odm_source a
+    set lenovopn=(SELECT distinct b.FATHER_LENOVOPN   -- added distinct for yangnan13 for VN 20241226
+                                 FROM PRDPCDW.IMP_ODM_BOM b
+                                WHERE EXISTS (SELECT 1 FROM Z_DIM_SBB_BS WHERE FATHER_LENOVOPN=SBB)
+                                and a.ODMPN = b.son_odmpn  -- added by yangnan13 20240914
+                                START WITH SON_ODMPN IN
+                                           (SELECT ODMPN
+                                              FROM PRDPCDW.IMP_ODM_SOURCE
+                                             WHERE LENOVOPN IS NULL)
+                               CONNECT BY PRIOR FATHER_ODMPN = SON_ODMPN AND PRIOR ODM=ODM)
+                               where lenovopn is null;
+                               commit;
+--end cuigq4 25.2.24 vn
+
+    --add by xurt1 for customer upload the null lenovopn in odm source
+
+    UPDATE Z_PCDW_ODM_SOURCE A
+       SET LENOVOPN =
+           (SELECT FATHER_LENOVOPN
+              FROM /*PRDPCDW.IMP_ODM_BOM*/ Z_MID_SOURCE_ODMBOM B
+             WHERE EXISTS
+             (SELECT 1 FROM Z_DSP_DIM_SBB WHERE FATHER_LENOVOPN = SBB)
+               AND A.ODMPN = B.SON_ODMPN -- added by yangnan13 20240914
+             START WITH SON_ODMPN IN (SELECT ODMPN
+                                        FROM PRDPCDW.IMP_ODM_SOURCE@PRDMDMN_LK_11G
+                                       WHERE LENOVOPN IS NULL)
+            CONNECT BY PRIOR FATHER_ODMPN = SON_ODMPN
+                   AND PRIOR ODM = ODM)
+     WHERE LENOVOPN IS NULL;
+     
+    COMMIT;
+    --begin cuigq4 25.2.24
+    --add the source from odm model to tmapi bom by zy3
+    EXECUTE IMMEDIATE 'truncate table z_mid_outsourcing_bom';
+
+    INSERT INTO z_mid_outsourcing_bom
+      (odm, odmpn, lenovopn, from_odm, to_odm, measure, sys_created_date, SBB)
+      SELECT a.odm, odmpn, lenovopn, from_odm, to_odm, b.measure, sys_created_date, SBB
+        FROM z_pcdw_odm_source a, z_v_item_desc b
+       WHERE a.lenovopn = b.item
+        and exists (select 1 from mst_sitemaster c where a.from_odm = c.siteid);
+
+    COMMIT;
+    -- as vn senario only has odmpn ,so default set them measrue = 'BAREBONE'-- yangnan13 20241226
+       INSERT INTO z_mid_outsourcing_bom
+      (odm, odmpn, lenovopn, from_odm, to_odm, measure, sys_created_date, SBB)
+      SELECT a.odm, odmpn, lenovopn, from_odm, to_odm, 'VN_BAREBONE' as measure, sysdate as sys_created_date, SBB
+        FROM z_pcdw_odm_source a
+        WHERE UPPER(FROM_ODM) IN ('LCFC_VN','COMPAL_VN','HUAQIN_VN','WISTRON_VN_NB')
+        and exists (select 1 from mst_sitemaster c where upper(a.from_odm)= upper(c.siteid))
+        and not exists ( select 1 from z_mid_outsourcing_bom  t where t.odm = a.odm  and t.odmpn = a.odmpn and t.from_odm= t.from_odm);-- aviod duplicate for VN yangnan13 20250104
+        commit;
+--end cuigq4 25.2.24
+
+    ----------modified by lp 20180802 end-------------------------------------------------
+
+    --add by xuml7 20240110
+    UPDATE Z_PCDW_ODM_SOURCE
+       SET ODMPN = 'SB21C42346'
+     WHERE ODMPN = '713100840081';
+    COMMIT;
+    --end
+
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+  PROCEDURE PRC_ODM_FRU(WFL_ID   VARCHAR2,
+                        NODE_ID  VARCHAR2,
+                        IV_ID    VARCHAR2,
+                        EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || '.PRC_ODM_FRU';
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    PKG_BASE_FUNCS.INIT_LOG_RUN(G_LOGIC_NAME || ':' || IV_ID);
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    EXECUTE IMMEDIATE 'truncate table z_pcdw_odm_fru';
+
+    EXECUTE IMMEDIATE 'truncate table z_pcdw_odm_fru_fcst';
+
+    INSERT INTO Z_PCDW_ODM_FRU
+      (ODM, ODMPN, LENOVOPN, BASICNAME, DESCRIPTION, DESCRIPTION_CHS,
+       MATERIAL_TYPE, EFFSTARTDATE, SYS_CREATED_BY, SYS_CREATED_DATE)
+      SELECT UPPER(ODM), ODMPN, LENOVOPN, BASICNAME, DESCRIPTION,
+             DESCRIPTION_CHS, MATERIAL_TYPE, EFFSTARTDATE, G_LOGIC_NAME, SYSDATE
+        FROM PRDPCDW.IMP_ODM_FRU@PRDMDMN_LK_11G; -- yangnan13 2024/10/18
+    COMMIT;
+
+    INSERT INTO Z_PCDW_ODM_FRU_FCST
+      (FRU_QTY, LENOVO_ITEM, ODM, ODM_ITEM, REQ_DATE, SYS_CREATED_BY,
+       SYS_CREATED_DATE)
+      SELECT FRU_QTY, LENOVO_ITEM, UPPER(ODM), ODM_ITEM, REQ_DATE,
+             SYS_CREATED_BY, SYSDATE
+        FROM PRDPCDW.IMP_ODM_FRU_FCST@PRDMDMN_LK_11G
+       WHERE TRUNC(SYSDATE, 'iw') = TRUNC(SYS_CREATED_DATE, 'iw') --add by zy3,for odm miss txt file
+      ;
+
+    COMMIT;
+
+    --WISTRON COMP, eg lenovo item is ***AA by zhaibo 20180209
+    UPDATE Z_PCDW_ODM_FRU_FCST A
+       SET LENOVO_ITEM = SUBSTR(A.ODM_ITEM, 0, 7)
+     WHERE A.ODM IN ('WISTRON', 'WISTRON ZS')
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW B
+             WHERE SUBSTR(A.ODM_ITEM, 0, 7) = B.COMPONENT)
+       AND NOT EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW C
+             WHERE A.LENOVO_ITEM = C.COMPONENT);
+
+    COMMIT;
+
+    UPDATE Z_PCDW_ODM_FRU_FCST A
+       SET LENOVO_ITEM = SUBSTR(A.ODM_ITEM, 0, 10)
+     WHERE A.ODM IN ('WISTRON', 'WISTRON ZS')
+       AND EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW B
+             WHERE SUBSTR(A.ODM_ITEM, 0, 10) = B.COMPONENT)
+       AND NOT EXISTS (SELECT 1
+              FROM PRDPCDW.Z_DSP_DIM_COMPONENT@PRDMDMN_19C_NEW C
+             WHERE A.LENOVO_ITEM = C.COMPONENT);
+
+    COMMIT;
+
+    --- add match_code BU logic for Wistron by zhaibo 20180209
+    ---bu for WISTRON COMP, eg lenovo item is ***AA, or 0000+ odm item
+    UPDATE Z_PCDW_ODM_FRU_FCST
+       SET BU = 'ThinkNB'
+     WHERE ODM = 'WISTRON'
+       AND PKG_BASE_FUNCS.GET_MATNR_INPUT(ODM_ITEM) <>
+           PKG_BASE_FUNCS.GET_MATNR_INPUT(LENOVO_ITEM)
+       AND LENOVO_ITEM IS NOT NULL;
+
+    COMMIT;
+
+    --- bu for WISTRON COMP
+    UPDATE Z_PCDW_ODM_FRU_FCST A
+       SET BU = 'IdeaNB'
+     WHERE ODM = 'WISTRON'
+       AND PKG_BASE_FUNCS.GET_MATNR_INPUT(ODM_ITEM) =
+           PKG_BASE_FUNCS.GET_MATNR_INPUT(LENOVO_ITEM)
+       AND EXISTS (SELECT 1
+              FROM PRDSPOEMTHK.Z_DIM_COMPONENT@PRDMDMN_LK_11G B
+             WHERE A.LENOVO_ITEM = B.COMPONENT); --add filter to filter out odm sfg part number 20180131
+
+    COMMIT;
+
+    ---bu for Wistron SFG
+    UPDATE Z_PCDW_ODM_FRU_FCST A
+       SET BU =
+           (SELECT BU
+              FROM Z_MID_MAT_UTIL_COMP_BU_FAMILY B
+             WHERE A.ODM_ITEM = B.COMP
+               AND A.ODM = B.WERKS
+               AND ROWNUM = 1)
+     WHERE EXISTS (SELECT 1
+              FROM Z_MID_MAT_UTIL_COMP_BU_FAMILY C
+             WHERE A.ODM_ITEM = C.COMP
+               AND A.ODM = C.WERKS)
+       AND ODM = 'WISTRON'
+          --AND LENOVO_ITEM IS NULL  ---lenovo item will be same with odm item for sfg product, comments on 20180131
+       AND BU IS NULL;
+
+    COMMIT;
+    ---END CHANGE
+
+    IF TO_NUMBER(TO_CHAR(SYSDATE, 'D', 'NLS_DATE_LANGUAGE = American')) = 5 /*v_snapdate*/
+     THEN
+      EXECUTE IMMEDIATE 'ALTER TABLE z_pcdw_odm_fru_fcst_HIS TRUNCATE SUBPARTITION P_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'YYYY') || '_W_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'WW');
+
+      INSERT INTO Z_PCDW_ODM_FRU_FCST_HIS
+        (VERSIONYEAR, VERSIONWEEK, VERSIONDATE, FRU_QTY, LENOVO_ITEM, ODM,
+         ODM_ITEM, REQ_DATE, SYS_CREATED_BY, SYS_CREATED_DATE)
+        SELECT TRUNC(V_CURRENTWEEK, 'yyyy'), TO_CHAR(V_CURRENTWEEK, 'ww'),
+               V_CURRENTWEEK, FRU_QTY, LENOVO_ITEM, ODM, ODM_ITEM, REQ_DATE,
+               SYS_CREATED_BY, SYS_CREATED_DATE
+          FROM Z_PCDW_ODM_FRU_FCST;
+
+      COMMIT;
+
+    END IF;
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+  /*PROCEDURE prc_odm_fg_shipment(wfl_id VARCHAR2, node_id VARCHAR2, iv_id VARCHAR2, exitcode OUT NUMBER) AS
+    l_proc_name VARCHAR2(40) := g_logic_name || '.PRC_ODM_FG_SHIPMENT';
+  BEGIN
+    exitcode         := -20099;
+    logger.wfl_id    := wfl_id;
+    logger.node_id   := node_id;
+    logger.log_level := 'ALL';
+
+    pkg_base_funcs.init_log_run(g_logic_name || ':' || iv_id);
+
+    logger.info(l_proc_name || ' Start');
+
+    EXECUTE IMMEDIATE 'truncate table z_pcdw_odm_fg_shipment';
+
+    INSERT INTO z_pcdw_odm_fg_shipment
+      (odm, po_id, po_line_id, item, ship_date, ship_qty, odm_created_date, sys_created_by, sys_created_date)
+      SELECT upper(odm), po_id, po_line_id, item, ship_date, ship_qty, odm_created_date, g_logic_name, SYSDATE
+        FROM prdpcdw.imp_odm_fg_shipment A
+        where exists ( select 1 from (SELECT distinct  INV_SOURCE, PVALUE
+                                    FROM z_ui_conf_parameter
+                                   WHERE pdomain = 'ODM_CODE' ) c
+                        where a.odm = c.pvalue
+                        and c. INV_SOURCE = 'SCC');--  yangnan13 20240725 need revise
+
+    COMMIT;
+
+    logger.info(l_proc_name || ' Completed');
+
+    exitcode := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      exitcode := SQLCODE;
+      logger.error;
+      RAISE;
+  END;*/
+
+  /*PROCEDURE prc_odm_mtmpo_map(wfl_id VARCHAR2, node_id VARCHAR2, iv_id VARCHAR2, exitcode OUT NUMBER) AS
+    l_proc_name VARCHAR2(40) := g_logic_name || '.TBD2';
+  BEGIN
+    exitcode         := -20099;
+    logger.wfl_id    := wfl_id;
+    logger.node_id   := node_id;
+    logger.log_level := 'ALL';
+
+    pkg_base_funcs.init_log_run(g_logic_name || ':' || iv_id);
+
+    logger.info(l_proc_name || ' Start');
+
+    EXECUTE IMMEDIATE 'truncate table Z_PCDW_ODM_MTMPO_MAP';
+
+    INSERT INTO z_pcdw_odm_mtmpo_map
+      (odm, mtm, po_id, po_line, odm_created_date, sys_created_by, sys_created_date)
+      SELECT upper(odm), mtm, po_id, po_line, odm_created_date, g_logic_name, SYSDATE
+        FROM prdpcdw.imp_odm_mtmpo_map;
+
+    COMMIT;
+
+    logger.info(l_proc_name || ' Completed');
+
+    exitcode := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      exitcode := SQLCODE;
+      logger.error;
+      RAISE;
+  END;*/
+
+  PROCEDURE PRC_FRU_OPENPO_DEMAND(WFL_ID   VARCHAR2,
+                                  NODE_ID  VARCHAR2,
+                                  IV_ID    VARCHAR2,
+                                  EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || '.PRC_FRU_OPENPO_DEMAND';
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    IF TO_NUMBER(TO_CHAR(SYSDATE, 'D', 'NLS_DATE_LANGUAGE = American')) = 5 THEN
+
+    EXECUTE IMMEDIATE 'truncate table Z_PCDW_FRU_OPENPO';
+
+    EXECUTE IMMEDIATE 'truncate table Z_MID_FRU_OPENPO';
+
+    INSERT INTO Z_MID_FRU_OPENPO
+      (EBELN, EBELP, MATNR, WERKS, BSART, AEDAT_H, LOEKZ_H, LIFNR, FRGKE, FRGRL,
+       KDATB, KDATE, RESWK, ZZMATSRC, AEDAT_L, LOEKZ_L, MENGE, KNTTP, ELIKZ,
+       LGORT, RESLO, RETPO, PSTYP, ZZODMFD, LPRIO, VBELN, VBELP, VETEN, OPENQTY,
+       SYS_ENT_STATE, SYS_CREATED_BY, SYS_CREATION_DATE, SYS_LAST_MODIFIED_BY,
+       SYS_LAST_MODIFIED_DATE, IHREZ, NEWDATE, VSBED, BANFN, BNFPO, BEDNR, TEX)
+      WITH TMP AS
+       (SELECT *
+          FROM PRDPCDW.PCDW_PO@PRDMDMN_LK_11G A
+         WHERE A.WERKS IN ('H021', 'H022', 'H023')
+           AND A.AEDAT_H > TRUNC(SYSDATE) - 365
+           AND A.LOEKZ_L IS NULL
+           AND A.LOEKZ_H IS NULL),
+      TMP1 AS
+       (SELECT *
+          FROM PRDPCDW.PCDW_PO_SL@PRDMDMN_LK_11G B
+         WHERE EXISTS (SELECT 1
+                  FROM TMP A
+                 WHERE A.EBELN = B.EBELN
+                   AND A.EBELP = B.EBELP))
+      SELECT EBELN, EBELP, MATNR, WERKS, BSART, AEDAT_H, LOEKZ_H, LIFNR, FRGKE,
+             FRGRL, KDATB, KDATE, RESWK, ZZMATSRC, AEDAT_L, LOEKZ_L, MENGE,
+             KNTTP, ELIKZ, LGORT, RESLO, RETPO, PSTYP, ZZODMFD, LPRIO, VBELN,
+             VBELP, VETEN,
+             --PO qty - TOTAL GR Qty
+             NVL(A.MENGE, 0) - NVL((SELECT SUM(WEMNG)
+                                      FROM TMP1 B
+                                     WHERE A.EBELN = B.EBELN
+                                       AND A.EBELP = B.EBELP),
+                                    0) AS OPENQTY, SYS_ENT_STATE,
+             L_PROC_NAME AS SYS_CREATED_BY, SYSDATE AS SYS_CREATION_DATE,
+             L_PROC_NAME AS SYS_LAST_MODIFIED_BY,
+             SYSDATE AS SYS_LAST_MODIFIED_DATE, IHREZ, NEWDATE, VSBED, BANFN,
+             BNFPO, BEDNR, TEX
+        FROM TMP A;
+
+    COMMIT;
+
+    --init data Z_PCDW_FRU_OPENPO from Z_MID_FRU_PO_INIT
+    INSERT INTO Z_PCDW_FRU_OPENPO
+      (EBELN, EBELP, MATNR, WERKS, AEDAT_H, LIFNR, MENGE, OPENQTY,
+       SYS_CREATION_DATE, TEX)
+      SELECT PO_ID, NVL(PO_LINE_ID, '00010'), ITEM, SITEID, PO_CREATION_DATE,
+             SUPPLIERID, PO_QTY,
+             NVL(A.PO_QTY, 0) - NVL((SELECT SUM(WEMNG)
+                                       FROM PRDPCDW.PCDW_PO_SL@PRDMDMN_LK_11G B
+                                      WHERE A.PO_ID = B.EBELN
+                                        AND NVL(PO_LINE_ID, '00010') = B.EBELP),
+                                     0) AS OPENQTY, SYS_CREATION_DATE, REMARKS
+        FROM Z_MID_FRU_PO_INIT A;
+
+    COMMIT;
+
+    MERGE INTO Z_PCDW_FRU_OPENPO A
+    USING Z_MID_FRU_OPENPO B
+    ON (A.EBELN = B.EBELN AND A.MATNR = B.MATNR)
+    WHEN MATCHED THEN
+      UPDATE SET A.OPENQTY = B.OPENQTY
+    WHEN NOT MATCHED THEN
+      INSERT
+        (A.EBELN, A.EBELP, A.MATNR, A.WERKS, A.AEDAT_H, A.LIFNR, A.MENGE,
+         A.OPENQTY, A.SYS_CREATION_DATE, A.TEX)
+      VALUES
+        (B.EBELN, B.EBELP, B.MATNR, B.WERKS, B.AEDAT_H, B.LIFNR, B.MENGE,
+         B.OPENQTY, SYSDATE, B.TEX);
+    COMMIT;
+
+    --check the remark logic,
+    --delete rebalance order
+    DELETE FROM Z_PCDW_FRU_OPENPO WHERE LIFNR = '0004007310'; --upper(tex) like '%REBALANCE%'; -- only wistron has rebalance po
+
+    COMMIT;
+    --end
+
+    DELETE FROM Z_PCDW_FRU_OPENPO WHERE OPENQTY <= 0;
+    DELETE FROM Z_PCDW_FRU_OPENPO
+     WHERE LIFNR IN (SELECT PATTRIBUTE
+                       FROM Z_UI_CONF_PARAMETER
+                      WHERE PDOMAIN = 'ODM_CODE'
+                        AND PVALUE IN ( /*'LCFC', */ 'WISTRON')); ---remove the LCFC by xuml7, because LCFC not send the fru info by FTP 20240318
+
+    COMMIT;
+
+    end if;
+
+    --need mapping the odm to engine
+
+    IF TO_NUMBER(TO_CHAR(SYSDATE, 'D', 'NLS_DATE_LANGUAGE = American')) = 5 /*v_snapdate*/
+     THEN
+      EXECUTE IMMEDIATE 'ALTER TABLE Z_PCDW_FRU_OPENPO_HIS TRUNCATE SUBPARTITION P_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'YYYY') || '_W_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'WW');
+
+      INSERT INTO Z_PCDW_FRU_OPENPO_HIS
+        (VERSIONYEAR, VERSIONWEEK, VERSIONDATE, EBELN, EBELP, MATNR, WERKS,
+         BSART, AEDAT_H, LOEKZ_H, LIFNR, FRGKE, FRGRL, KDATB, KDATE, RESWK,
+         ZZMATSRC, AEDAT_L, LOEKZ_L, MENGE, KNTTP, ELIKZ, LGORT, RESLO, RETPO,
+         PSTYP, ZZODMFD, LPRIO, VBELN, VBELP, VETEN, OPENQTY, SYS_ENT_STATE,
+         SYS_CREATED_BY, SYS_CREATION_DATE, SYS_LAST_MODIFIED_BY,
+         SYS_LAST_MODIFIED_DATE, IHREZ, NEWDATE, VSBED, BANFN, BNFPO, BEDNR)
+        SELECT TRUNC(V_CURRENTWEEK, 'yyyy'), TO_CHAR(V_CURRENTWEEK, 'ww'),
+               V_CURRENTWEEK, EBELN, EBELP, MATNR, WERKS, BSART, AEDAT_H,
+               LOEKZ_H, LIFNR, FRGKE, FRGRL, KDATB, KDATE, RESWK, ZZMATSRC,
+               AEDAT_L, LOEKZ_L, MENGE, KNTTP, ELIKZ, LGORT, RESLO, RETPO, PSTYP,
+               ZZODMFD, LPRIO, VBELN, VBELP, VETEN, OPENQTY, SYS_ENT_STATE,
+               SYS_CREATED_BY, SYS_CREATION_DATE, SYS_LAST_MODIFIED_BY,
+               SYS_LAST_MODIFIED_DATE, IHREZ, NEWDATE, VSBED, BANFN, BNFPO,
+               BEDNR
+          FROM Z_PCDW_FRU_OPENPO;
+
+      COMMIT;
+    END IF;
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+
+  PROCEDURE PRC_ODM_SFG_INTRANS(WFL_ID   VARCHAR2,
+                                NODE_ID  VARCHAR2,
+                                IV_ID    VARCHAR2,
+                                EXITCODE OUT NUMBER) AS
+    L_PROC_NAME VARCHAR2(40) := G_LOGIC_NAME || '.PRC_ODM_SFG_INTRANS';
+  BEGIN
+    EXITCODE         := -20099;
+    LOGGER.WFL_ID    := WFL_ID;
+    LOGGER.NODE_ID   := NODE_ID;
+    LOGGER.LOG_LEVEL := 'ALL';
+
+    PKG_BASE_FUNCS.INIT_LOG_RUN(G_LOGIC_NAME || ':' || IV_ID);
+
+    LOGGER.INFO(L_PROC_NAME || ' Start');
+
+    EXECUTE IMMEDIATE 'truncate table z_pcdw_odm_sfg_intransit';
+
+    INSERT INTO Z_PCDW_ODM_SFG_INTRANSIT
+      (ODM, ODMPN, LENOVOPN, SHIP_QTY, SHIP_DATE, SHIP_TO, ODM_CREATE_DATE,
+       SYS_CREATED_BY, SYS_CREATED_DATE)
+      SELECT DECODE(UPPER(ODM), 'FOXCONNL6', 'FOXCONN', ODM),
+             NVL(ODMPN, LENOVOPN), NVL(LENOVOPN, ODMPN), SUM(SHIP_QTY),
+             SHIP_DATE, SHIP_TO, MAX(ODM_CREATE_DATE), G_LOGIC_NAME, SYSDATE
+        FROM PRDPCDW.IMP_ODM_SFG_INTRANSIT@PRDMDMN_LK_11G A
+       WHERE EXISTS (SELECT 1
+                FROM Z_UI_CONF_PARAMETER B
+               WHERE PDOMAIN = 'ODM_CODE'
+                 AND ASN_SOURCE = 'FTP'
+                 AND DECODE(UPPER(A.ODM), 'FOXCONNL6', 'FOXCONN', A.ODM) =
+                     B.PVALUE)
+       GROUP BY ODM, NVL(ODMPN, LENOVOPN), NVL(LENOVOPN, ODMPN), SHIP_DATE,
+                SHIP_TO;
+    /*
+    UNION ALL
+     SELECT supplier_name as odm, nvl(vendor_pn, lenovo_pn) as odmpn, nvl(lenovo_pn, vendor_pn) as  lenovopn, SUM(delivery_qty), ship_date, ship_to,
+           MAX(sys_created_date), g_logic_name, SYSDATE
+      FROM Z_SCC_ASN a
+     WHERE EXISTS (SELECT 1
+                      FROM  z_ui_conf_parameter b
+                      WHERE pdomain = 'ODM_CODE'
+                       AND ASN_SOURCE = 'SCC'
+                       AND a.supplier_name = b.pvalue )
+       GROUP BY supplier_name, nvl(vendor_pn, lenovo_pn),nvl(lenovo_pn, vendor_pn), ship_date, ship_to;
+    */
+    COMMIT;
+
+--add cuigq4 25.2.24 vn begin
+INSERT INTO z_pcdw_odm_sfg_intransit --add wanggang38 2024-12-20 FOR_VN except COMPAL_VN-->COMPAL situation intransit
+  (odm,
+   odmpn,
+   lenovopn,
+   ship_qty,
+   ship_date,
+   ship_to,
+   odm_create_date,
+   sys_created_by,
+   sys_created_date)
+  select ODM,
+         ODMPN,
+         LENOVOPN,
+         SHIP_QTY,
+         SHIP_DATE,
+         SHIP_TO,
+         ODM_CREATE_DATE,
+         L_PROC_NAME,
+         SYSDATE
+    from (select ODM,
+                 ODMPN,
+                 LENOVOPN,
+                 SHIP_QTY,
+                 SHIP_DATE,
+                 SHIP_TO,
+                 ODM_CREATE_DATE,
+                 row_number() over(partition by ODM, ODMPN, LENOVOPN, SHIP_QTY, SHIP_DATE, SHIP_TO order by ODM, ODMPN, LENOVOPN, SHIP_QTY, SHIP_DATE, SHIP_TO, VERSION desc) rn
+            from (SELECT UPPER(ODM) /*|| '_VN'*/ ODM,
+                         NVL(ODM_PN, LENOVO_PN) odmpn,
+                         nvl(LENOVO_PN, ODM_PN) lenovopn,
+                         sum(DELIVERY_QTY) ship_qty,
+                         SHIP_DATE,
+                         UPPER(odm) ship_to,
+                         MAX(CREATE_TIME) odm_create_date,
+                         VERSION
+                    FROM I_SCC_INTEGRATION.ODM_ASN@PRD_CSEN a
+                   where  exists 
+                   (select 1 from (select ODM,max(VERSION) version from  I_SCC_INTEGRATION.ODM_ASN@PRD_CSEN a group by ODM) b
+                   where a.version=b.version and a.odm=b.odm)      -- added by yangnan13 20250123 for each ODM get each max version                    
+                  and UPPER(STATUS) = 'OPEN'
+                  and PROCUREMENT_MODE in ('ODM Internal Rebalance')
+                  and UPPER(odm) in ('WISTRON','LCFC','HUAQIN','LCFC_VN','HUAQIN_VN','COMPAL_VN','WISTRON_VN_NB')
+                  and upper(BU) like '%NB%'
+                   group by UPPER(ODM),
+                            NVL(ODM_PN, LENOVO_PN),
+                            nvl(LENOVO_PN, ODM_PN),
+                            SHIP_DATE,
+                            VERSION))
+   where rn = 1;
+   COMMIT;
+
+-- COMPAL_VN special deal with --> intransit start by 72A1%, should transilate to 451AX to  z_pcdw_odm_sfg_intransit
+--step 1 get mapping relationship
+   insert into Z_TAXPN_MAP_COMPAL
+   (ODMPN_INSTRANSIT, ODM_PN, packing_pn, odm, ODM_CREATED_DATE)
+   select ODMPN_INSTRANSIT, ODM_PN, LENOVO_PN, FROM_ODM, ODM_CREATED_DATE
+     from (select ODMPN_INSTRANSIT,
+                  ODM_PN,
+                  LENOVO_PN,
+                  FROM_ODM,
+                  ODM_CREATED_DATE,
+                  version,
+                  row_number() over(partition by ODMPN_INSTRANSIT, ODM_PN, LENOVO_PN, FROM_ODM, ODM_CREATED_DATE order by ODMPN_INSTRANSIT, ODM_PN, LENOVO_PN, FROM_ODM, ODM_CREATED_DATE, VERSION desc) rn
+             from (select A.ODMPN_INSTRANSIT,
+                          A.ODM_PN,
+                          a.LENOVO_PN,
+                          A.from_odm,
+                          max(A.ODM_CREATED_DATE) as ODM_CREATED_DATE,
+                          version
+                     from I_SCC_INTEGRATION.odm_imp_source@PRD_CSEN A
+                    WHERE ODMPN_INSTRANSIT IS NOT NULL
+                      and upper(from_odm) = 'COMPAL_VN'
+                      and  exists (select 1 from (select from_odm,max(VERSION) version from  I_SCC_INTEGRATION.odm_imp_source@prd_csen a group by from_odm) b
+                            where a.version=b.version and a.from_odm=b.from_odm)
+                    group by A.ODMPN_INSTRANSIT,
+                             A.ODM_PN,
+                             a.LENOVO_PN,
+                             A.from_odm,
+                             version))
+    where rn = 1;
+commit;
+
+--step 2 insert into stock for compal_vn--> compal
+INSERT INTO z_pcdw_odm_sfg_intransit --add wanggang38 2024-12-20 FOR_VN intransit
+  (odm,
+   odmpn,
+   lenovopn,
+   ship_qty,
+   ship_date,
+   ship_to,
+   odm_create_date,
+   sys_created_by,
+   sys_created_date)
+  select ODM,
+         ODM_PN,
+         LENOVO_PN,
+         SHIP_QTY,
+         SHIP_DATE,
+         SHIP_TO,
+         ODM_CREATE_DATE,
+         L_PROC_NAME,
+         SYSDATE
+    from (select ODM,
+                 ODM_PN,
+                 LENOVO_PN,
+                 SHIP_QTY,
+                 SHIP_DATE,
+                 SHIP_TO,
+                 ODM_CREATE_DATE,
+                 version,
+                 row_number() over(partition by ODM, ODM_PN, ODM_PN, SHIP_QTY, SHIP_DATE, SHIP_TO, VERSION order by ODM, ODM_PN, ODM_PN, SHIP_QTY, SHIP_DATE, SHIP_TO, VERSION desc) rn
+            from (SELECT UPPER(a.ODM) /*|| '_VN'*/ ODM,
+                         a.ODM_PN AS  ODM_PN,
+                         B.PACKING_PN as   LENOVO_PN,
+                         sum(DELIVERY_QTY) ship_qty,
+                         SHIP_DATE,
+                         a.odm AS ship_to,
+                         MAX(CREATE_TIME) odm_create_date,
+                         version
+                    FROM ( select *
+                            from I_SCC_INTEGRATION.ODM_ASN@PRD_CSEN a
+                           where  exists (select 1 from (select ODM,max(VERSION) version from I_SCC_INTEGRATION.ODM_ASN@PRD_CSEN a group by ODM) b
+                   where a.version=b.version and a.odm=b.odm) ) a
+                   inner join Z_TAXPN_MAP_COMPAL b
+                      on a.ODM_PN = b.ODMPN_INSTRANSIT
+                   WHERE UPPER(STATUS) = 'OPEN'
+                     and PROCUREMENT_MODE in ('ODM Internal Rebalance')
+                     and UPPER(a.odm) in ('COMPAL')
+                     and upper(BU) like '%NB%'
+                   group by a.ODM, b.PACKING_PN, a.ODM_PN, ship_date, version))
+   where rn = 1;
+commit;
+
+    UPDATE z_pcdw_odm_sfg_intransit a
+       SET lenovopn = substr(a.odmpn, 0, 10)
+     WHERE a.odm IN ('WISTRON', 'WISTRON ZS','WISTRON_VN','WISTRON_VN_NB')-- added by yangnan13 20250103 for VN
+       AND EXISTS (SELECT 1 FROM z_dim_component_bs b WHERE substr(a.odmpn, 0, 10) = b.component)
+       AND NOT EXISTS (SELECT 1 FROM z_dim_component_bs c WHERE a.lenovopn = c.component);
+    COMMIT;
+    
+    update z_pcdw_odm_sfg_intransit a
+    set lenovopn = null
+    where odm in('HUAQIN','COMPAL','COMPAL_VN', 'WISTRON','WISTRON_VN_NB') and nvl(lenovopn,' ') in('NA','N/A');
+    COMMIT;
+--add cuigq4 25.2.24 vn end
+
+
+    IF TO_NUMBER(TO_CHAR(SYSDATE, 'D', 'NLS_DATE_LANGUAGE = American')) = 5 /*v_snapdate*/
+     THEN
+      EXECUTE IMMEDIATE 'ALTER TABLE Z_PCDW_ODM_SFG_INTRANSIT_HIS TRUNCATE SUBPARTITION P_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'YYYY') || '_W_' ||
+                        TO_CHAR(V_CURRENTWEEK, 'WW');
+
+      INSERT INTO Z_PCDW_ODM_SFG_INTRANSIT_HIS
+        (VERSIONYEAR, VERSIONWEEK, VERSIONDATE, ODM, ODMPN, LENOVOPN, SHIP_QTY,
+         SHIP_DATE, SHIP_TO, ODM_CREATE_DATE, SYS_CREATED_BY, SYS_CREATED_DATE)
+        SELECT TRUNC(V_CURRENTWEEK, 'yyyy'), TO_CHAR(V_CURRENTWEEK, 'ww'),
+               V_CURRENTWEEK, ODM, ODMPN, LENOVOPN, SHIP_QTY, SHIP_DATE,
+               NVL(SHIP_TO, ' '), ODM_CREATE_DATE, SYS_CREATED_BY,
+               SYS_CREATED_DATE
+          FROM Z_PCDW_ODM_SFG_INTRANSIT;
+
+      COMMIT;
+
+    END IF;
+
+    LOGGER.INFO(L_PROC_NAME || ' Completed');
+
+    EXITCODE := 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      EXITCODE := SQLCODE;
+      LOGGER.ERROR;
+      RAISE;
+  END;
+
+END;
+/
